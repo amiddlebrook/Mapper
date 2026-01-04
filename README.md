@@ -82,6 +82,12 @@ Save hotels, restaurants, and attractions. Build the perfect itinerary with ever
 **Research Projects**
 Organize locations for research, field work, or any project that involves physical places.
 
+## Deployment
+
+Mapper is deployed at **[list-mapper.com](https://list-mapper.com)** on Cloudflare Pages.
+
+For domain configuration and deployment instructions, see [DOMAIN_SETUP.md](./DOMAIN_SETUP.md).
+
 ## Support
 
 Found a bug or have a suggestion? Open an issue on our [GitHub repository](https://github.com/North-Star-Apps/Mapper).

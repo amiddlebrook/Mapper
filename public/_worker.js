@@ -356,6 +356,26 @@ function normalizeUrl(url) {
   return normalized.toLowerCase();
 }
 
+// Serve static assets for non-API routes
+app.get('*', async (c) => {
+  // If we get here, none of the API routes matched
+  // Try to serve static assets from the Pages environment
+  const url = new URL(c.req.url);
+
+  // For the root path, serve index.html
+  if (url.pathname === '/') {
+    url.pathname = '/index.html';
+  }
+
+  // Use the ASSETS binding to fetch static files
+  if (c.env.ASSETS) {
+    return c.env.ASSETS.fetch(url);
+  }
+
+  // Fallback: if no ASSETS binding, return 404
+  return c.text('Not found', 404);
+});
+
 export default {
   fetch: app.fetch
 };

@@ -191,31 +191,39 @@ app.get('/api/auth/me', authenticate, async (c) => {
 // ============================================
 
 app.get('/api/maps', authenticate, async (c) => {
-  const userId = c.get('userId');
+  try {
+    const userId = c.get('userId');
 
-  const maps = await c.env.DB.prepare(
-    'SELECT id, name, description, is_public, created_at FROM maps WHERE user_id = ? ORDER BY created_at DESC'
-  ).bind(userId).all();
+    const maps = await c.env.DB.prepare(
+      'SELECT id, name, description, is_public, created_at FROM maps WHERE user_id = ? ORDER BY created_at DESC'
+    ).bind(userId).all();
 
-  if (maps.results.length === 0) {
-    // Auto-create default map
-    const mapId = crypto.randomUUID();
-    const name = 'My List Map';
+    if (!maps.results || maps.results.length === 0) {
+      // Auto-create default map
+      const mapId = crypto.randomUUID();
+      const name = 'My List Map';
 
-    await c.env.DB.prepare(
-      'INSERT INTO maps (id, user_id, name, is_public) VALUES (?, ?, ?, 0)'
-    ).bind(mapId, userId, name).run();
+      const insert = await c.env.DB.prepare(
+        'INSERT INTO maps (id, user_id, name, is_public) VALUES (?, ?, ?, 0)'
+      ).bind(mapId, userId, name).run();
 
-    return c.json([{
-      id: mapId,
-      name,
-      description: null,
-      is_public: 0,
-      created_at: Math.floor(Date.now() / 1000)
-    }]);
+      if (!insert.success) {
+        throw new Error('Failed to create default map');
+      }
+
+      return c.json([{
+        id: mapId,
+        name,
+        description: null,
+        is_public: 0,
+        created_at: Math.floor(Date.now() / 1000)
+      }]);
+    }
+
+    return c.json(maps.results);
+  } catch (e) {
+    return c.json({ error: e.message, stack: e.stack }, 500);
   }
-
-  return c.json(maps.results);
 });
 
 app.post('/api/maps', authenticate, async (c) => {

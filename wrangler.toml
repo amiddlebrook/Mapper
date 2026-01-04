@@ -1,6 +1,11 @@
 name = "mapper"
 compatibility_date = "2024-01-01"
 pages_build_output_dir = "public"
+main = "public/_worker.js"
+
+[assets]
+directory = "public"
+binding = "ASSETS"
 
 [vars]
 ENVIRONMENT = "production"

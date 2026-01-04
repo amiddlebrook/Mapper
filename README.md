@@ -86,10 +86,23 @@ Organize locations for research, field work, or any project that involves physic
 
 Mapper is deployed at **[list-mapper.com](https://list-mapper.com)** on Cloudflare Pages.
 
+### 🚨 Deployment Failing? Start Here
+
+If you're seeing a deployment error, read **[QUICKFIX.md](./QUICKFIX.md)** for immediate resolution steps.
+
 ### Important Documentation
 
-- **[DEPLOYMENT_FIX.md](./DEPLOYMENT_FIX.md)** - Fix deployment errors (read this first if deploys are failing)
+- **[QUICKFIX.md](./QUICKFIX.md)** - 5-minute fix for deployment errors (start here!)
+- **[DEPLOYMENT_FIX.md](./DEPLOYMENT_FIX.md)** - Comprehensive deployment troubleshooting
 - **[DOMAIN_SETUP.md](./DOMAIN_SETUP.md)** - Custom domain configuration guide
+
+### Validate Configuration
+
+Before deploying, run the validation script to check your configuration:
+
+```bash
+./validate-config.sh
+```
 
 ### Quick Deploy
 
@@ -101,7 +114,7 @@ npm run deploy
 git push origin main  # Cloudflare auto-deploys
 ```
 
-**Note**: This is a Cloudflare Pages project. Use `wrangler pages deploy`, not `wrangler deploy`.
+**Important**: This is a Cloudflare Pages project. The dashboard must have NO build command set - Pages handles deployment automatically. Never use `wrangler deploy` (that's for Workers, not Pages).
 
 ## Support
 

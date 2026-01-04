@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mapper - Location Mapping Tool</title>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-primary: #0a0a0a;
+            --bg-secondary: #151515;
+            --bg-tertiary: #1f1f1f;
+            --accent-green: #6aff8f;
+            --accent-green-dim: #4acc6d;
+            --text-primary: #ffffff;
+            --text-secondary: #a0a0a0;
+            --border-color: #2a2a2a;
+            --error: #ff6b6b;
+            --success: var(--accent-green);
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+        }
+
+        /* Header */
+        .header {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--accent-green);
+            text-shadow: 0 0 10px rgba(106, 255, 143, 0.3);
+        }
+
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .user-email {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        button {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: all 0.2s;
+        }
+
+        button:hover {
+            background: var(--bg-secondary);
+            border-color: var(--accent-green);
+        }
+
+        button.primary {
+            background: var(--accent-green);
+            color: var(--bg-primary);
+            border-color: var(--accent-green);
+            font-weight: 600;
+        }
+
+        button.primary:hover {
+            background: var(--accent-green-dim);
+            box-shadow: 0 0 15px rgba(106, 255, 143, 0.3);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Login Screen */
+        .login-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 2rem;
+        }
+
+        .login-box {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 2rem;
+            max-width: 400px;
+            width: 100%;
+        }
+
+        .login-box h2 {
+            color: var(--accent-green);
+            margin-bottom: 1.5rem;
+            text-align: center;
+        }
+
+        /* Main App */
+        .app-container {
+            display: none;
+        }
+
+        .map-selector {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 1rem 2rem;
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            overflow-x: auto;
+        }
+
+        .map-tabs {
+            display: flex;
+            gap: 0.5rem;
+            flex: 1;
+        }
+
+        .map-tab {
+            padding: 0.5rem 1rem;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.2s;
+        }
+
+        .map-tab:hover {
+            border-color: var(--accent-green);
+        }
+
+        .map-tab.active {
+            background: var(--accent-green);
+            color: var(--bg-primary);
+            border-color: var(--accent-green);
+            font-weight: 600;
+        }
+
+        .input-form {
+            background: var(--bg-secondary);
+            padding: 1.5rem 2rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .form-grid {
+            display: grid;
+            grid-template-columns: 2fr 2fr 1fr auto;
+            gap: 1rem;
+            align-items: end;
+        }
+
+        @media (max-width: 768px) {
+            .form-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        label {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+
+        input, select {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 0.75rem;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            outline: none;
+            transition: all 0.2s;
+        }
+
+        input:focus, select:focus {
+            border-color: var(--accent-green);
+            box-shadow: 0 0 0 3px rgba(106, 255, 143, 0.1);
+        }
+
+        .error-message {
+            color: var(--error);
+            font-size: 0.85rem;
+            margin-top: 0.25rem;
+        }
+
+        .success-message {
+            color: var(--success);
+            font-size: 0.85rem;
+            margin-top: 0.25rem;
+        }
+
+        /* Map Container */
+        .map-container {
+            height: 500px;
+            border-bottom: 1px solid var(--border-color);
+            position: relative;
+        }
+
+        #map {
+            height: 100%;
+            width: 100%;
+        }
+
+        .leaflet-popup-content-wrapper {
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            border: 1px solid var(--accent-green);
+        }
+
+        .leaflet-popup-tip {
+            background: var(--bg-secondary);
+        }
+
+        .popup-content {
+            padding: 0.5rem;
+        }
+
+        .popup-content h3 {
+            color: var(--accent-green);
+            margin-bottom: 0.5rem;
+            font-size: 1rem;
+        }
+
+        .popup-content a {
+            color: var(--accent-green);
+            text-decoration: none;
+        }
+
+        .popup-content a:hover {
+            text-decoration: underline;
+        }
+
+        /* List View */
+        .list-container {
+            padding: 2rem;
+        }
+
+        .list-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.5rem;
+        }
+
+        .list-header h2 {
+            color: var(--accent-green);
+        }
+
+        .pin-list {
+            display: grid;
+            gap: 1rem;
+        }
+
+        .pin-item {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: all 0.2s;
+            cursor: pointer;
+        }
+
+        .pin-item:hover {
+            border-color: var(--accent-green);
+            box-shadow: 0 0 15px rgba(106, 255, 143, 0.1);
+        }
+
+        .pin-item.highlighted {
+            border-color: var(--accent-green);
+            box-shadow: 0 0 20px rgba(106, 255, 143, 0.2);
+        }
+
+        .pin-info {
+            flex: 1;
+        }
+
+        .pin-type {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+
+        .pin-type.housing {
+            background: rgba(106, 255, 143, 0.2);
+            color: var(--accent-green);
+        }
+
+        .pin-type.job {
+            background: rgba(74, 158, 255, 0.2);
+            color: #4a9eff;
+        }
+
+        .pin-type.park {
+            background: rgba(131, 255, 106, 0.2);
+            color: #83ff6a;
+        }
+
+        .pin-type.custom {
+            background: rgba(255, 106, 235, 0.2);
+            color: #ff6aeb;
+        }
+
+        .pin-address {
+            font-size: 0.95rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .pin-url {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            text-decoration: none;
+        }
+
+        .pin-url:hover {
+            color: var(--accent-green);
+        }
+
+        .pin-actions {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        button.danger {
+            background: transparent;
+            border-color: var(--error);
+            color: var(--error);
+        }
+
+        button.danger:hover {
+            background: var(--error);
+            color: var(--text-primary);
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 3rem;
+            color: var(--text-secondary);
+        }
+
+        .empty-state h3 {
+            color: var(--text-primary);
+            margin-bottom: 0.5rem;
+        }
+
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 2rem;
+            max-width: 500px;
+            width: 90%;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.5rem;
+        }
+
+        .modal-header h2 {
+            color: var(--accent-green);
+        }
+
+        .close-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 1.5rem;
+            cursor: pointer;
+            padding: 0;
+            width: 2rem;
+            height: 2rem;
+        }
+
+        .close-btn:hover {
+            color: var(--text-primary);
+        }
+
+        .share-info {
+            background: var(--bg-tertiary);
+            padding: 1rem;
+            border-radius: 4px;
+            margin-top: 1rem;
+        }
+
+        .share-url {
+            background: var(--bg-primary);
+            padding: 0.75rem;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 0.85rem;
+            word-break: break-all;
+            margin-top: 0.5rem;
+            color: var(--accent-green);
+        }
+
+        .hidden {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+    <!-- Login Screen -->
+    <div id="loginScreen" class="login-container">
+        <div class="login-box">
+            <h2 class="logo">⚡ Mapper</h2>
+            <p style="text-align: center; color: var(--text-secondary); margin-bottom: 1.5rem;">
+                Map your world, one location at a time
+            </p>
+            <form id="loginForm">
+                <div class="form-group">
+                    <label for="loginEmail">Email Address</label>
+                    <input type="email" id="loginEmail" placeholder="you@example.com" required>
+                </div>
+                <div id="loginError" class="error-message hidden"></div>
+                <button type="submit" class="primary" style="width: 100%; margin-top: 1rem;">
+                    Sign In / Sign Up
+                </button>
+            </form>
+            <p style="text-align: center; color: var(--text-secondary); font-size: 0.85rem; margin-top: 1rem;">
+                No password needed - we'll create or log you in
+            </p>
+        </div>
+    </div>
+
+    <!-- Main App -->
+    <div id="appContainer" class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">⚡ Mapper</div>
+            <div class="user-info">
+                <span class="user-email" id="userEmail"></span>
+                <button id="logoutBtn">Logout</button>
+            </div>
+        </header>
+
+        <!-- Map Selector -->
+        <div class="map-selector">
+            <div class="map-tabs" id="mapTabs"></div>
+            <button class="primary" id="newMapBtn">+ New Map</button>
+            <button id="shareMapBtn">Share</button>
+        </div>
+
+        <!-- Input Form -->
+        <div class="input-form">
+            <form id="pinForm">
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="pinUrl">URL *</label>
+                        <input type="text" id="pinUrl" placeholder="https://example.com/listing" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="pinAddress">Address *</label>
+                        <input type="text" id="pinAddress" placeholder="123 Main St, City, State" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="pinType">Type *</label>
+                        <select id="pinType" required>
+                            <option value="Housing">Housing</option>
+                            <option value="Job">Job</option>
+                            <option value="Park">Park</option>
+                            <option value="Custom">Custom</option>
+                        </select>
+                    </div>
+                    <button type="submit" class="primary" style="padding: 0.75rem 1.5rem;">Add Pin</button>
+                </div>
+                <div id="customTypeGroup" class="form-group hidden" style="margin-top: 1rem; max-width: 300px;">
+                    <label for="customType">Custom Type</label>
+                    <input type="text" id="customType" placeholder="e.g., Restaurant, School">
+                </div>
+                <div id="formError" class="error-message hidden"></div>
+                <div id="formSuccess" class="success-message hidden"></div>
+            </form>
+        </div>
+
+        <!-- Map -->
+        <div class="map-container">
+            <div id="map"></div>
+        </div>
+
+        <!-- List -->
+        <div class="list-container">
+            <div class="list-header">
+                <h2>Pins</h2>
+                <div id="pinCount"></div>
+            </div>
+            <div id="pinList" class="pin-list"></div>
+        </div>
+    </div>
+
+    <!-- New Map Modal -->
+    <div id="newMapModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Create New Map</h2>
+                <button class="close-btn" onclick="closeNewMapModal()">&times;</button>
+            </div>
+            <form id="newMapForm">
+                <div class="form-group">
+                    <label for="mapName">Map Name *</label>
+                    <input type="text" id="mapName" placeholder="e.g., Apartment Search 2024" required>
+                </div>
+                <div class="form-group" style="margin-top: 1rem;">
+                    <label for="mapDescription">Description (optional)</label>
+                    <input type="text" id="mapDescription" placeholder="A brief description">
+                </div>
+                <div class="form-group" style="margin-top: 1rem;">
+                    <label>
+                        <input type="checkbox" id="mapPublic"> Make this map publicly shareable
+                    </label>
+                </div>
+                <button type="submit" class="primary" style="width: 100%; margin-top: 1.5rem;">
+                    Create Map
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Share Map Modal -->
+    <div id="shareMapModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Share Map</h2>
+                <button class="close-btn" onclick="closeShareModal()">&times;</button>
+            </div>
+            <div id="shareContent"></div>
+        </div>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <!-- App JS -->
+    <script src="app.js"></script>
+</body>
+</html>

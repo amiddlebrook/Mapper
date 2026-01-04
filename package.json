@@ -4,6 +4,7 @@
   "description": "Cloudflare-native mapping application",
   "type": "module",
   "scripts": {
+    "build": "cp src/worker.js public/_worker.js",
     "dev": "wrangler pages dev public --d1 DB=mapper_db --kv SESSIONS",
     "deploy": "wrangler pages deploy public",
     "db:migrate": "wrangler d1 execute mapper_db --file=./schema.sql"

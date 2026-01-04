@@ -3,6 +3,11 @@ import { cors } from 'hono/cors';
 
 const app = new Hono();
 
+app.onError((err, c) => {
+  console.error('Global App Error:', err);
+  return c.json({ error: 'Internal Server Error', details: err.message, stack: err.stack }, 500);
+});
+
 app.use('/*', cors());
 
 // Middleware to check authentication

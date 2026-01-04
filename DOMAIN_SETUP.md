@@ -142,7 +142,8 @@ Check propagation status:
 ### wrangler.toml
 ```toml
 name = "mapper"
-main = "src/worker.js"
+compatibility_date = "2024-01-01"
+pages_build_output_dir = "public"
 
 [vars]
 ENVIRONMENT = "production"
@@ -155,9 +156,6 @@ database_id = "f0324c27-590d-40fa-adbf-ca4704e99b33"
 [[kv_namespaces]]
 binding = "SESSIONS_MAPPER"
 id = "b6312c0de1a847fea67a47d2242390cd"
-
-[[pages]]
-project_name = "mapper"
 ```
 
 ### Deployment Commands

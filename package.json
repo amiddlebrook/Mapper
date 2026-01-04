@@ -4,7 +4,7 @@
   "description": "Cloudflare-native mapping application",
   "type": "module",
   "scripts": {
-    "build": "cp src/worker.js public/_worker.js",
+    "build": "esbuild src/worker.js --bundle --format=esm --outfile=public/_worker.js --minify",
     "dev": "wrangler pages dev public --d1 DB=mapper_db --kv SESSIONS",
     "deploy": "wrangler pages deploy public",
     "db:migrate": "wrangler d1 execute mapper_db --file=./schema.sql"
@@ -13,6 +13,7 @@
     "hono": "^3.11.7"
   },
   "devDependencies": {
+    "esbuild": "^0.19.0",
     "wrangler": "^3.22.1"
   }
 }

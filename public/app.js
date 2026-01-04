@@ -1,588 +1,694 @@
 // API Configuration
 const API_BASE = window.location.origin;
 
+// Default lists - always show these 3
+const DEFAULT_LISTS = ['Housing', 'Jobs', 'Parks'];
+
 // State
 let state = {
-    sessionId: localStorage.getItem('sessionId'),
+    sessionId: null,
     user: null,
-    maps: [],
-    currentMap: null,
-    pins: [],
+    isLoggedIn: false,
+    customLists: [],
+    items: {},
+    collapsedLists: {},
     map: null,
-    markers: {}
+    markers: {},
+    satelliteLayer: null,
+    streetLayer: null,
+    // New: Map ID for cloud sync
+    mapId: null
 };
+
+// Helper: Map Frontend List Names to Backend Types
+function listNameToProps(listName) {
+    if (listName === 'Housing') return { type: 'Housing' };
+    if (listName === 'Jobs') return { type: 'Job' };
+    if (listName === 'Parks') return { type: 'Park' };
+    return { type: 'Custom', custom_type: listName };
+}
+
+function propsToListName(type, customType) {
+    if (type === 'Housing') return 'Housing';
+    if (type === 'Job') return 'Jobs';
+    if (type === 'Park') return 'Parks';
+    return customType;
+}
+
+// List colors - distinct, non-overlapping colors
+const LIST_COLORS = {
+    Housing: '#2A9D8F',  // Teal (matches logo)
+    Jobs: '#E76F51',     // Coral/Orange
+    Parks: '#F4A261'     // Sandy yellow
+};
+
+function getListColor(listName) {
+    if (LIST_COLORS[listName]) return LIST_COLORS[listName];
+    let hash = 0;
+    for (let i = 0; i < listName.length; i++) {
+        hash = listName.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    const hue = hash % 360;
+    return `hsl(${hue}, 80%, 65%)`;
+}
 
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
+    // Check for OAuth callback in URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const sessionFromCallback = urlParams.get('session');
+
+    if (sessionFromCallback) {
+        localStorage.setItem('sessionId', sessionFromCallback);
+        state.sessionId = sessionFromCallback;
+        // Clean URL
+        window.history.replaceState({}, document.title, window.location.pathname);
+    } else {
+        // Check for existing session
+        state.sessionId = localStorage.getItem('sessionId');
+    }
+
+    // Initial render (empty/guest)
+    initMap();
+    setupEventListeners();
+    updateListDropdown();
+    renderLists();
+    updateAuthUI();
+
+    // Check for existing session
     if (state.sessionId) {
         try {
             await loadUser();
-            await initApp();
+            updateAuthUI();
+            // Now load data from cloud
+            await loadCloudData();
         } catch (error) {
-            console.error('Session invalid:', error);
-            localStorage.removeItem('sessionId');
-            state.sessionId = null;
-            showLoginScreen();
+            console.log('Session expired or invalid', error);
+            handleLogout();
         }
-    } else {
-        showLoginScreen();
     }
 });
 
 // ============================================
-// Authentication
+// Storage (Only used when Logged In)
 // ============================================
 
-document.getElementById('loginForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
+// ============================================
+// Cloud Storage (Logged In)
+// ============================================
 
-    const email = document.getElementById('loginEmail').value;
-    const errorEl = document.getElementById('loginError');
+async function loadCloudData() {
+    if (!state.isLoggedIn || !state.sessionId) return;
 
     try {
-        const response = await fetch(`${API_BASE}/api/auth/login`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email })
+        // 1. Get User's Map
+        const mapsRes = await fetch(`${API_BASE}/api/maps`, {
+            headers: { 'X-Session-ID': state.sessionId }
+        });
+        const maps = await mapsRes.json();
+
+        if (maps.length > 0) {
+            state.mapId = maps[0].id;
+        } else {
+            // Should have been created by backend, but just in case
+            console.error('No map found for user');
+            return;
+        }
+
+        // 2. Get Pins
+        const pinsRes = await fetch(`${API_BASE}/api/maps/${state.mapId}/pins`, {
+            headers: { 'X-Session-ID': state.sessionId }
+        });
+        const pins = await pinsRes.json();
+
+        // 3. Clear and Rebuild State
+        state.items = {};
+        state.customLists = [];
+
+        pins.forEach(pin => {
+            const listName = propsToListName(pin.type, pin.custom_type);
+
+            // Add to custom lists if not default
+            if (!DEFAULT_LISTS.includes(listName) && !state.customLists.includes(listName)) {
+                state.customLists.push(listName);
+            }
+
+            if (!state.items[listName]) {
+                state.items[listName] = [];
+            }
+
+            state.items[listName].push({
+                id: pin.id,
+                url: pin.url,
+                address: pin.address,
+                lat: pin.lat,
+                lng: pin.lng,
+                created_at: pin.created_at
+            });
         });
 
-        const data = await response.json();
+        updateListDropdown();
+        renderLists();
+        updateMapMarkers();
 
-        if (!response.ok) {
-            throw new Error(data.error || 'Login failed');
-        }
-
-        state.sessionId = data.sessionId;
-        state.user = { id: data.userId, email: data.email };
-        localStorage.setItem('sessionId', data.sessionId);
-
-        await initApp();
-    } catch (error) {
-        errorEl.textContent = error.message;
-        errorEl.classList.remove('hidden');
+    } catch (e) {
+        console.error('Error loading cloud data', e);
     }
-});
+}
 
-document.getElementById('logoutBtn').addEventListener('click', async () => {
-    try {
-        await apiRequest('/api/auth/logout', { method: 'POST' });
-    } catch (error) {
-        console.error('Logout error:', error);
-    } finally {
-        localStorage.removeItem('sessionId');
-        state.sessionId = null;
-        state.user = null;
-        state.maps = [];
-        state.currentMap = null;
-        state.pins = [];
-        location.reload();
-    }
-});
-
-async function loadUser() {
-    const data = await apiRequest('/api/auth/me');
-    state.user = data;
+// Deprecated: Local Storage functions removed
+function saveToStorage() {
+    // No-op for cloud sync
 }
 
 // ============================================
-// App Initialization
+// Map
 // ============================================
-
-async function initApp() {
-    showAppScreen();
-    initMap();
-    await loadMaps();
-    setupEventListeners();
-}
-
-function showLoginScreen() {
-    document.getElementById('loginScreen').style.display = 'flex';
-    document.getElementById('appContainer').style.display = 'none';
-}
-
-function showAppScreen() {
-    document.getElementById('loginScreen').style.display = 'none';
-    document.getElementById('appContainer').style.display = 'block';
-    document.getElementById('userEmail').textContent = state.user.email;
-}
 
 function initMap() {
-    // Initialize Leaflet map
-    state.map = L.map('map').setView([37.7749, -122.4194], 12); // Default to San Francisco
+    state.map = L.map('map').setView([39.8283, -98.5795], 4);
 
-    // Use OpenStreetMap tiles (free, no API key)
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    state.satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        attribution: 'Tiles &copy; Esri',
+        maxZoom: 19
+    });
+
+    state.streetLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '© OpenStreetMap contributors',
         maxZoom: 19
-    }).addTo(state.map);
-
-    // Custom marker colors
-    createCustomMarkerIcons();
-}
-
-function createCustomMarkerIcons() {
-    const colors = {
-        Housing: '#6aff8f',
-        Job: '#4a9eff',
-        Park: '#83ff6a',
-        Custom: '#ff6aeb'
-    };
-
-    state.markerIcons = {};
-
-    for (const [type, color] of Object.entries(colors)) {
-        state.markerIcons[type] = L.divIcon({
-            className: 'custom-marker',
-            html: `<div style="
-                background-color: ${color};
-                width: 24px;
-                height: 24px;
-                border-radius: 50% 50% 50% 0;
-                transform: rotate(-45deg);
-                border: 2px solid #0a0a0a;
-                box-shadow: 0 0 10px rgba(0,0,0,0.5);
-            "></div>`,
-            iconSize: [24, 24],
-            iconAnchor: [12, 24],
-            popupAnchor: [0, -24]
-        });
-    }
-}
-
-function setupEventListeners() {
-    // Pin form
-    document.getElementById('pinForm').addEventListener('submit', handleAddPin);
-
-    // Type selector
-    document.getElementById('pinType').addEventListener('change', (e) => {
-        const customGroup = document.getElementById('customTypeGroup');
-        if (e.target.value === 'Custom') {
-            customGroup.classList.remove('hidden');
-        } else {
-            customGroup.classList.add('hidden');
-        }
     });
 
-    // New map button
-    document.getElementById('newMapBtn').addEventListener('click', openNewMapModal);
+    state.satelliteLayer.addTo(state.map);
 
-    // New map form
-    document.getElementById('newMapForm').addEventListener('submit', handleCreateMap);
-
-    // Share button
-    document.getElementById('shareMapBtn').addEventListener('click', openShareModal);
-}
-
-// ============================================
-// Maps Management
-// ============================================
-
-async function loadMaps() {
-    try {
-        state.maps = await apiRequest('/api/maps');
-
-        if (state.maps.length === 0) {
-            // Create first map automatically
-            const firstMap = await apiRequest('/api/maps', {
-                method: 'POST',
-                body: JSON.stringify({
-                    name: 'My First Map',
-                    description: 'Start adding locations here',
-                    is_public: false
-                })
-            });
-            state.maps = [firstMap];
-        }
-
-        renderMapTabs();
-        selectMap(state.maps[0].id);
-    } catch (error) {
-        console.error('Error loading maps:', error);
-    }
-}
-
-function renderMapTabs() {
-    const tabsContainer = document.getElementById('mapTabs');
-    tabsContainer.innerHTML = '';
-
-    state.maps.forEach(map => {
-        const tab = document.createElement('div');
-        tab.className = 'map-tab';
-        tab.textContent = map.name;
-        tab.onclick = () => selectMap(map.id);
-
-        if (state.currentMap && state.currentMap.id === map.id) {
-            tab.classList.add('active');
-        }
-
-        tabsContainer.appendChild(tab);
+    document.getElementById('btnSatellite').addEventListener('click', () => {
+        state.map.removeLayer(state.streetLayer);
+        state.satelliteLayer.addTo(state.map);
+        document.getElementById('btnSatellite').classList.add('active');
+        document.getElementById('btnStreet').classList.remove('active');
     });
+
+    document.getElementById('btnStreet').addEventListener('click', () => {
+        state.map.removeLayer(state.satelliteLayer);
+        state.streetLayer.addTo(state.map);
+        document.getElementById('btnStreet').classList.add('active');
+        document.getElementById('btnSatellite').classList.remove('active');
+    });
+
+    updateMapMarkers();
 }
 
-async function selectMap(mapId) {
-    try {
-        state.currentMap = state.maps.find(m => m.id === mapId);
-        renderMapTabs();
-        await loadPins(mapId);
-    } catch (error) {
-        console.error('Error selecting map:', error);
-    }
-}
-
-function openNewMapModal() {
-    document.getElementById('newMapModal').classList.add('active');
-}
-
-function closeNewMapModal() {
-    document.getElementById('newMapModal').classList.remove('active');
-    document.getElementById('newMapForm').reset();
-}
-
-async function handleCreateMap(e) {
-    e.preventDefault();
-
-    const name = document.getElementById('mapName').value;
-    const description = document.getElementById('mapDescription').value;
-    const isPublic = document.getElementById('mapPublic').checked;
-
-    try {
-        const newMap = await apiRequest('/api/maps', {
-            method: 'POST',
-            body: JSON.stringify({ name, description, is_public: isPublic })
-        });
-
-        state.maps.push(newMap);
-        renderMapTabs();
-        selectMap(newMap.id);
-        closeNewMapModal();
-    } catch (error) {
-        alert('Error creating map: ' + error.message);
-    }
-}
-
-function openShareModal() {
-    if (!state.currentMap) return;
-
-    const modal = document.getElementById('shareMapModal');
-    const content = document.getElementById('shareContent');
-
-    if (state.currentMap.is_public) {
-        const shareUrl = `${window.location.origin}?map=${state.currentMap.id}`;
-        content.innerHTML = `
-            <p>This map is public. Anyone with this link can view it:</p>
-            <div class="share-url">${shareUrl}</div>
-            <button class="primary" style="width: 100%; margin-top: 1rem;" onclick="copyShareUrl('${shareUrl}')">
-                Copy Link
-            </button>
-        `;
-    } else {
-        content.innerHTML = `
-            <p>This map is private. Make it public to share:</p>
-            <button class="primary" style="width: 100%; margin-top: 1rem;" onclick="makeMapPublic()">
-                Make Public
-            </button>
-        `;
-    }
-
-    modal.classList.add('active');
-}
-
-function closeShareModal() {
-    document.getElementById('shareMapModal').classList.remove('active');
-}
-
-function copyShareUrl(url) {
-    navigator.clipboard.writeText(url);
-    alert('Link copied to clipboard!');
-}
-
-async function makeMapPublic() {
-    try {
-        await apiRequest(`/api/maps/${state.currentMap.id}`, {
-            method: 'PUT',
-            body: JSON.stringify({
-                name: state.currentMap.name,
-                description: state.currentMap.description,
-                is_public: true
-            })
-        });
-
-        state.currentMap.is_public = 1;
-        closeShareModal();
-        alert('Map is now public!');
-    } catch (error) {
-        alert('Error making map public: ' + error.message);
-    }
-}
-
-// ============================================
-// Pins Management
-// ============================================
-
-async function loadPins(mapId) {
-    try {
-        state.pins = await apiRequest(`/api/maps/${mapId}/pins`);
-        renderPins();
-        updateMapMarkers();
-    } catch (error) {
-        console.error('Error loading pins:', error);
-    }
-}
-
-function renderPins() {
-    const listContainer = document.getElementById('pinList');
-    const countEl = document.getElementById('pinCount');
-
-    countEl.textContent = `${state.pins.length} location${state.pins.length !== 1 ? 's' : ''}`;
-
-    if (state.pins.length === 0) {
-        listContainer.innerHTML = `
-            <div class="empty-state">
-                <h3>No pins yet</h3>
-                <p>Add your first location using the form above</p>
-            </div>
-        `;
-        return;
-    }
-
-    listContainer.innerHTML = '';
-
-    state.pins.forEach(pin => {
-        const item = document.createElement('div');
-        item.className = 'pin-item';
-        item.dataset.pinId = pin.id;
-
-        const typeClass = pin.type.toLowerCase();
-        const displayType = pin.type === 'Custom' && pin.custom_type ? pin.custom_type : pin.type;
-
-        item.innerHTML = `
-            <div class="pin-info">
-                <span class="pin-type ${typeClass}">${displayType}</span>
-                <div class="pin-address">${pin.address}</div>
-                <a href="https://${pin.url}" target="_blank" class="pin-url">${pin.url}</a>
-            </div>
-            <div class="pin-actions">
-                <button onclick="centerOnPin(${pin.lat}, ${pin.lng})">View</button>
-                <button class="danger" onclick="deletePin('${pin.id}')">Delete</button>
-            </div>
-        `;
-
-        item.addEventListener('click', (e) => {
-            if (!e.target.closest('button') && !e.target.closest('a')) {
-                centerOnPin(pin.lat, pin.lng);
-            }
-        });
-
-        listContainer.appendChild(item);
+function createMarkerIcon(color) {
+    return L.divIcon({
+        className: 'custom-marker',
+        html: `<div style="
+            background-color: ${color};
+            width: 24px;
+            height: 24px;
+            border-radius: 50% 50% 50% 0;
+            transform: rotate(-45deg);
+            border: 2px solid #0a0a0a;
+            box-shadow: 0 0 10px rgba(0,0,0,0.5);
+        "></div>`,
+        iconSize: [24, 24],
+        iconAnchor: [12, 24],
+        popupAnchor: [0, -24]
     });
 }
 
 function updateMapMarkers() {
-    // Clear existing markers
     Object.values(state.markers).forEach(marker => marker.remove());
     state.markers = {};
 
-    if (state.pins.length === 0) {
-        state.map.setView([37.7749, -122.4194], 12);
-        return;
-    }
+    const allItems = [];
+    const allLists = [...DEFAULT_LISTS, ...state.customLists];
 
-    // Add new markers
-    state.pins.forEach(pin => {
-        const icon = state.markerIcons[pin.type] || state.markerIcons.Custom;
-        const marker = L.marker([pin.lat, pin.lng], { icon }).addTo(state.map);
+    allLists.forEach(listName => {
+        const items = state.items[listName] || [];
+        items.forEach(item => {
+            allItems.push({ ...item, listName });
+        });
+    });
 
-        const displayType = pin.type === 'Custom' && pin.custom_type ? pin.custom_type : pin.type;
+    if (allItems.length === 0) return;
+
+    allItems.forEach(item => {
+        const color = getListColor(item.listName);
+        const icon = createMarkerIcon(color);
+        const marker = L.marker([item.lat, item.lng], { icon }).addTo(state.map);
 
         marker.bindPopup(`
             <div class="popup-content">
-                <h3>${displayType}</h3>
-                <p>${pin.address}</p>
-                <a href="https://${pin.url}" target="_blank">${pin.url}</a>
+                <h3>${item.listName}</h3>
+                <p>${item.address}</p>
+                <a href="https://${item.url}" target="_blank">${item.url}</a>
             </div>
         `);
 
-        state.markers[pin.id] = marker;
+        state.markers[item.id] = marker;
     });
 
-    // Fit map to show all markers
-    const bounds = L.latLngBounds(state.pins.map(p => [p.lat, p.lng]));
-    state.map.fitBounds(bounds, { padding: [50, 50] });
+    const bounds = L.latLngBounds(allItems.map(item => [item.lat, item.lng]));
+    state.map.fitBounds(bounds, { padding: [50, 50], maxZoom: 12 });
 }
 
-async function handleAddPin(e) {
+// ============================================
+// Lists UI
+// ============================================
+
+function renderLists() {
+    const container = document.getElementById('listsContainer');
+    const allLists = [...DEFAULT_LISTS, ...state.customLists];
+
+    container.innerHTML = '';
+
+    allLists.forEach(listName => {
+        const items = state.items[listName] || [];
+        const isCollapsed = state.collapsedLists[listName];
+        const color = getListColor(listName);
+
+        const group = document.createElement('div');
+        group.className = `list-group ${isCollapsed ? 'collapsed' : ''}`;
+        group.dataset.type = listName;
+
+        group.innerHTML = `
+            <div class="list-group-header" onclick="toggleList('${listName}')" style="border-left: 3px solid ${color};">
+                <div class="list-group-title">
+                    <span class="arrow">▼</span>
+                    <span>${listName}</span>
+                </div>
+                <span class="list-group-count">${items.length}</span>
+            </div>
+            <div class="list-group-items">
+                ${items.length === 0 ?
+                '<div class="list-group-empty">No items yet</div>' :
+                items.map(item => `
+                        <div class="list-item" data-id="${item.id}" onclick="focusItem('${item.id}', ${item.lat}, ${item.lng})">
+                            <div class="list-item-info">
+                                <div class="list-item-address">${item.address}</div>
+                                <a href="https://${item.url}" target="_blank" class="list-item-url" onclick="event.stopPropagation()">${item.url}</a>
+                            </div>
+                            <div class="list-item-actions">
+                                <button class="small" onclick="event.stopPropagation(); focusItem('${item.id}', ${item.lat}, ${item.lng})">View</button>
+                                <button class="small danger" onclick="event.stopPropagation(); deleteItem('${listName}', '${item.id}')">Delete</button>
+                            </div>
+                        </div>
+                    `).join('')
+            }
+            </div>
+        `;
+
+        container.appendChild(group);
+    });
+}
+
+function toggleList(listName) {
+    state.collapsedLists[listName] = !state.collapsedLists[listName];
+    // Only save collapse state if logged in? Or maybe fine to save preference? 
+    // User said "not saved", implies DATA. UI prefs maybe ok, but let's stick to strict no-save.
+    saveToStorage();
+    renderLists();
+}
+
+function focusItem(id, lat, lng) {
+    state.map.setView([lat, lng], 16);
+
+    if (state.markers[id]) {
+        state.markers[id].openPopup();
+    }
+
+    document.querySelectorAll('.list-item').forEach(el => el.classList.remove('highlighted'));
+    const item = document.querySelector(`[data-id="${id}"]`);
+    if (item) {
+        item.classList.add('highlighted');
+        setTimeout(() => item.classList.remove('highlighted'), 3000);
+    }
+}
+
+function updateListDropdown() {
+    const select = document.getElementById('inputList');
+    select.innerHTML = '';
+
+    DEFAULT_LISTS.forEach(list => {
+        const option = document.createElement('option');
+        option.value = list;
+        option.textContent = list;
+        select.appendChild(option);
+    });
+
+    state.customLists.forEach(list => {
+        const option = document.createElement('option');
+        option.value = list;
+        option.textContent = list;
+        select.appendChild(option);
+    });
+}
+
+// ============================================
+// Event Listeners
+// ============================================
+
+function setupEventListeners() {
+    // Add button opens modal
+    document.getElementById('addBtn').addEventListener('click', openAddModal);
+
+    // Add form
+    document.getElementById('addForm').addEventListener('submit', handleAddItem);
+
+    // New list button
+    document.getElementById('newListBtn').addEventListener('click', openNewListModal);
+
+    // New list form
+    document.getElementById('newListForm').addEventListener('submit', handleCreateList);
+
+    // Auth - Google OAuth
+    document.getElementById('signInBtn').addEventListener('click', () => {
+        window.location.href = `${API_BASE}/api/auth/google`;
+    });
+
+    // Profile
+    document.getElementById('profileBtn').addEventListener('click', openProfileModal);
+    document.getElementById('logoutBtnModal').addEventListener('click', handleLogout);
+}
+
+// ============================================
+// Add Modal
+// ============================================
+
+function openAddModal() {
+    document.getElementById('addModal').classList.add('active');
+    document.getElementById('formError').classList.add('hidden');
+    document.getElementById('inputUrl').focus();
+}
+
+function closeAddModal() {
+    document.getElementById('addModal').classList.remove('active');
+    document.getElementById('addForm').reset();
+}
+
+async function handleAddItem(e) {
     e.preventDefault();
 
-    const url = document.getElementById('pinUrl').value;
-    const address = document.getElementById('pinAddress').value;
-    const type = document.getElementById('pinType').value;
-    const customType = document.getElementById('customType').value;
-
+    const url = document.getElementById('inputUrl').value;
+    const address = document.getElementById('inputAddress').value;
+    const listName = document.getElementById('inputList').value;
     const errorEl = document.getElementById('formError');
-    const successEl = document.getElementById('formSuccess');
 
     errorEl.classList.add('hidden');
-    successEl.classList.add('hidden');
 
     try {
-        // Geocode address
-        const geocoded = await apiRequest(`/api/geocode?address=${encodeURIComponent(address)}`);
-
-        // Add pin
-        const newPin = await apiRequest(`/api/maps/${state.currentMap.id}/pins`, {
-            method: 'POST',
-            body: JSON.stringify({
-                url,
-                address: geocoded.address,
-                lat: geocoded.lat,
-                lng: geocoded.lng,
-                type,
-                custom_type: type === 'Custom' ? customType : null
-            })
+        // Geocode
+        const geocodeResponse = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1`, {
+            headers: { 'User-Agent': 'ListMapper/1.0' }
         });
+        const geocodeData = await geocodeResponse.json();
 
-        state.pins.unshift(newPin);
-        renderPins();
+        if (!geocodeData || geocodeData.length === 0) {
+            throw new Error('Address not found. Try a more specific address.');
+        }
+
+        const lat = parseFloat(geocodeData[0].lat);
+        const lng = parseFloat(geocodeData[0].lon);
+        const fullAddress = geocodeData[0].display_name;
+
+        // Normalize URL
+        let normalizedUrl = url.trim()
+            .replace(/^https?:\/\//, '')
+            .replace(/\/$/, '')
+            .replace(/^www\./, '')
+            .toLowerCase();
+
+        // Check for duplicates
+        const items = state.items[listName] || [];
+        if (items.some(item => item.url === normalizedUrl)) {
+            throw new Error('This URL is already in this list');
+        }
+
+        // Create item locally
+        const newItem = {
+            id: crypto.randomUUID(),
+            url: normalizedUrl,
+            address: fullAddress,
+            lat,
+            lng,
+            created_at: new Date().toISOString()
+        };
+
+        // IF LOGGED IN: Sync to Cloud
+        if (state.isLoggedIn && state.sessionId && state.mapId) {
+            const props = listNameToProps(listName);
+
+            const res = await fetch(`${API_BASE}/api/maps/${state.mapId}/pins`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Session-ID': state.sessionId
+                },
+                body: JSON.stringify({
+                    url: normalizedUrl,
+                    address: fullAddress,
+                    lat,
+                    lng,
+                    type: props.type,
+                    custom_type: props.custom_type
+                })
+            });
+
+            if (!res.ok) {
+                const err = await res.json();
+                throw new Error(err.error || 'Failed to save to cloud');
+            }
+
+            const savedPin = await res.json();
+            newItem.id = savedPin.id; // Use server ID
+        }
+
+        if (!state.items[listName]) {
+            state.items[listName] = [];
+        }
+        state.items[listName].unshift(newItem);
+
+        // Make sure list is expanded
+        state.collapsedLists[listName] = false;
+
+        renderLists();
         updateMapMarkers();
+        closeAddModal();
 
-        // Reset form
-        document.getElementById('pinForm').reset();
-        document.getElementById('customTypeGroup').classList.add('hidden');
-
-        successEl.textContent = 'Pin added successfully!';
-        successEl.classList.remove('hidden');
-
-        setTimeout(() => successEl.classList.add('hidden'), 3000);
     } catch (error) {
         errorEl.textContent = error.message;
         errorEl.classList.remove('hidden');
     }
 }
 
-async function deletePin(pinId) {
-    if (!confirm('Are you sure you want to delete this pin?')) {
+async function deleteItem(listName, itemId) {
+    if (!confirm('Delete this item?')) return;
+
+    // IF LOGGED IN: Sync Delete
+    if (state.isLoggedIn && state.sessionId && state.mapId) {
+        try {
+            await fetch(`${API_BASE}/api/maps/${state.mapId}/pins/${itemId}`, {
+                method: 'DELETE',
+                headers: { 'X-Session-ID': state.sessionId }
+            });
+        } catch (e) {
+            console.error('Failed to delete from cloud', e);
+            alert('Failed to delete from cloud');
+            return;
+        }
+    }
+
+    state.items[listName] = (state.items[listName] || []).filter(item => item.id !== itemId);
+    renderLists();
+    updateMapMarkers();
+}
+
+// ============================================
+// New List Modal
+// ============================================
+
+function openNewListModal() {
+    document.getElementById('newListModal').classList.add('active');
+    document.getElementById('newListName').focus();
+}
+
+function closeNewListModal() {
+    document.getElementById('newListModal').classList.remove('active');
+    document.getElementById('newListForm').reset();
+}
+
+function handleCreateList(e) {
+    e.preventDefault();
+
+    const name = document.getElementById('newListName').value.trim();
+
+    if (!name) return;
+
+    if (DEFAULT_LISTS.includes(name) || state.customLists.includes(name)) {
+        alert('This list already exists!');
         return;
     }
 
+    state.customLists.push(name);
+    state.items[name] = [];
+
+    // Note: We don't explicitly sync "User Lists" to backend until an item is added to them.
+    // The backend infers lists from Pin Types.
+    // This is fine for now.
+
+    updateListDropdown();
+    renderLists();
+    closeNewListModal();
+}
+
+// ============================================
+// Auth & Profile
+// ============================================
+
+async function handleLogout() {
     try {
-        await apiRequest(`/api/maps/${state.currentMap.id}/pins/${pinId}`, {
-            method: 'DELETE'
-        });
-
-        state.pins = state.pins.filter(p => p.id !== pinId);
-        renderPins();
-        updateMapMarkers();
-    } catch (error) {
-        alert('Error deleting pin: ' + error.message);
-    }
-}
-
-function centerOnPin(lat, lng) {
-    state.map.setView([lat, lng], 15);
-
-    // Highlight corresponding pin in list
-    document.querySelectorAll('.pin-item').forEach(item => {
-        item.classList.remove('highlighted');
-    });
-
-    const pin = state.pins.find(p => p.lat === lat && p.lng === lng);
-    if (pin) {
-        const item = document.querySelector(`[data-pin-id="${pin.id}"]`);
-        if (item) {
-            item.classList.add('highlighted');
-            item.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-            setTimeout(() => item.classList.remove('highlighted'), 3000);
+        if (state.sessionId) {
+            await fetch(`${API_BASE}/api/auth/logout`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Session-ID': state.sessionId
+                }
+            });
         }
-    }
+    } catch (e) { console.error(e); }
+
+    // Clear everything
+    localStorage.removeItem('sessionId');
+    localStorage.removeItem('customLists');
+    // Also clear list items from storage
+    Object.keys(localStorage).forEach(key => {
+        if (key.startsWith('list_') || key === 'collapsedLists') {
+            localStorage.removeItem(key);
+        }
+    });
+
+    state.sessionId = null;
+    state.user = null;
+    state.isLoggedIn = false;
+    state.customLists = [];
+    state.items = {};
+    state.collapsedLists = {};
+    state.mapId = null;
+
+    closeProfileModal();
+    updateAuthUI();
+    renderLists();
+    updateListDropdown();
+    updateMapMarkers();
+
+    // Replace URL to remove session param
+    window.history.replaceState({}, document.title, '/');
+    window.location.reload();
 }
 
-// ============================================
-// API Helper
-// ============================================
-
-async function apiRequest(endpoint, options = {}) {
-    const headers = {
-        'Content-Type': 'application/json',
-        ...options.headers
-    };
-
-    if (state.sessionId) {
-        headers['X-Session-ID'] = state.sessionId;
-    }
-
-    const response = await fetch(`${API_BASE}${endpoint}`, {
-        ...options,
-        headers
+async function loadUser() {
+    const response = await fetch(`${API_BASE}/api/auth/me`, {
+        headers: { 'X-Session-ID': state.sessionId }
     });
+
+    if (!response.ok) throw new Error('Session invalid');
 
     const data = await response.json();
+    state.user = data;
+    state.isLoggedIn = true;
+}
 
-    if (!response.ok) {
-        throw new Error(data.error || 'Request failed');
+function updateAuthUI() {
+    const signInBtn = document.getElementById('signInBtn');
+    const userInfo = document.getElementById('userInfo');
+
+    if (state.isLoggedIn && state.user) {
+        signInBtn.classList.add('hidden');
+        userInfo.classList.remove('hidden');
+    } else {
+        signInBtn.classList.remove('hidden');
+        userInfo.classList.add('hidden');
     }
-
-    return data;
 }
 
 // ============================================
-// URL Parameters (for shared maps)
+// Profile Logic
 // ============================================
 
-const urlParams = new URLSearchParams(window.location.search);
-const sharedMapId = urlParams.get('map');
+function openProfileModal() {
+    if (!state.user) return;
 
-if (sharedMapId && !state.sessionId) {
-    // Load public map without authentication
-    loadPublicMap(sharedMapId);
+    const emailEl = document.getElementById('profileEmail');
+    const listCountEl = document.getElementById('profileListCount');
+    const itemCountEl = document.getElementById('profileItemCount');
+
+    emailEl.textContent = state.user.email;
+
+    const listCount = DEFAULT_LISTS.length + state.customLists.length;
+    let itemCount = 0;
+    Object.values(state.items).forEach(items => itemCount += items.length);
+
+    listCountEl.textContent = listCount;
+    itemCountEl.textContent = itemCount;
+
+    document.getElementById('profileModal').classList.add('active');
 }
 
-async function loadPublicMap(mapId) {
-    try {
-        const map = await fetch(`${API_BASE}/api/maps/${mapId}`).then(r => r.json());
+function closeProfileModal() {
+    document.getElementById('profileModal').classList.remove('active');
+}
 
-        if (!map.is_public) {
-            alert('This map is private');
-            return;
-        }
+function downloadData() {
+    // Flatten data to CSV
+    const rows = [['List Name', 'Address', 'URL', 'Latitude', 'Longitude', 'Date Added']];
 
-        // Show limited UI for public viewing
-        document.getElementById('loginScreen').innerHTML = `
-            <div class="login-box" style="max-width: 90%; max-height: 90vh; overflow: auto;">
-                <h2>${map.name}</h2>
-                <p style="color: var(--text-secondary); margin-bottom: 1rem;">${map.description || ''}</p>
-                <div id="publicMap" style="height: 400px; margin-bottom: 1rem;"></div>
-                <div id="publicPins"></div>
-                <button class="primary" onclick="location.href='${window.location.origin}'" style="margin-top: 1rem;">
-                    Create Your Own Map
-                </button>
-            </div>
-        `;
+    // Process all lists
+    [...DEFAULT_LISTS, ...state.customLists].forEach(listName => {
+        const items = state.items[listName] || [];
+        items.forEach(item => {
+            // Escape field values to handle commas/quotes in data
+            const clean = (text) => {
+                if (!text) return '';
+                const str = String(text).replace(/"/g, '""'); // Double up quotes
+                return `"${str}"`; // Wrap in quotes
+            };
 
-        // Initialize map for public viewing
-        const publicMap = L.map('publicMap').setView([37.7749, -122.4194], 12);
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '© OpenStreetMap contributors'
-        }).addTo(publicMap);
-
-        const pins = await fetch(`${API_BASE}/api/maps/${mapId}/pins`).then(r => r.json());
-
-        pins.forEach(pin => {
-            L.marker([pin.lat, pin.lng]).addTo(publicMap)
-                .bindPopup(`
-                    <strong>${pin.type}</strong><br>
-                    ${pin.address}<br>
-                    <a href="https://${pin.url}" target="_blank">${pin.url}</a>
-                `);
+            rows.push([
+                clean(listName),
+                clean(item.address),
+                clean(item.url),
+                item.lat,
+                item.lng,
+                clean(item.created_at || new Date().toISOString())
+            ]);
         });
+    });
 
-        if (pins.length > 0) {
-            const bounds = L.latLngBounds(pins.map(p => [p.lat, p.lng]));
-            publicMap.fitBounds(bounds, { padding: [50, 50] });
-        }
+    // Convert to CSV string
+    const csvContent = rows.map(row => row.join(',')).join('\n');
 
-    } catch (error) {
-        console.error('Error loading public map:', error);
-        alert('Error loading map');
-    }
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `list-mapper-export-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
 }
+
+// ============================================
+// Global functions
+// ============================================
+
+window.toggleList = toggleList;
+window.focusItem = focusItem;
+window.deleteItem = deleteItem;
+window.openAddModal = openAddModal;
+window.closeAddModal = closeAddModal;
+window.openNewListModal = openNewListModal;
+window.closeNewListModal = closeNewListModal;
+window.openProfileModal = openProfileModal;
+window.closeProfileModal = closeProfileModal;
+window.downloadData = downloadData;

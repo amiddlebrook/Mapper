@@ -2,6 +2,16 @@ name = "mapper"
 main = "src/worker.js"
 compatibility_date = "2024-01-01"
 
+# Custom domain routes
+routes = [
+  { pattern = "list-mapper.com", custom_domain = true },
+  { pattern = "www.list-mapper.com", custom_domain = true }
+]
+
+# Serve static files from public directory
+[assets]
+directory = "./public"
+
 [vars]
 ENVIRONMENT = "production"
 

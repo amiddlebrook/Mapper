@@ -254,7 +254,7 @@ app.post('/api/maps', authenticate, async (c) => {
 });
 
 app.get('/api/maps/:id', async (c) => {
-  const mapId = c.params.id;
+  const mapId = c.req.param('id');
   const sessionId = c.req.header('X-Session-ID');
 
   const map = await c.env.DB.prepare(
@@ -285,7 +285,7 @@ app.get('/api/maps/:id', async (c) => {
 
 app.put('/api/maps/:id', authenticate, async (c) => {
   const userId = c.get('userId');
-  const mapId = c.params.id;
+  const mapId = c.req.param('id');
   const { name, description, is_public } = await c.req.json();
 
   // Verify ownership
@@ -306,7 +306,7 @@ app.put('/api/maps/:id', authenticate, async (c) => {
 
 app.delete('/api/maps/:id', authenticate, async (c) => {
   const userId = c.get('userId');
-  const mapId = c.params.id;
+  const mapId = c.req.param('id');
 
   const map = await c.env.DB.prepare(
     'SELECT user_id FROM maps WHERE id = ?'
@@ -326,7 +326,7 @@ app.delete('/api/maps/:id', authenticate, async (c) => {
 // ============================================
 
 app.get('/api/maps/:mapId/pins', async (c) => {
-  const mapId = c.params.mapId;
+  const mapId = c.req.param('mapId');
   const sessionId = c.req.header('X-Session-ID');
 
   // Check map permissions
@@ -362,7 +362,7 @@ app.get('/api/maps/:mapId/pins', async (c) => {
 app.post('/api/maps/:mapId/pins', authenticate, async (c) => {
   try {
     const userId = c.get('userId');
-    const mapId = c.params.mapId;
+    const mapId = c.req.param('mapId');
     const { url, address, lat, lng, type, custom_type } = await c.req.json();
 
     // Verify ownership
@@ -419,8 +419,8 @@ app.post('/api/maps/:mapId/pins', authenticate, async (c) => {
 
 app.delete('/api/maps/:mapId/pins/:pinId', authenticate, async (c) => {
   const userId = c.get('userId');
-  const mapId = c.params.mapId;
-  const pinId = c.params.pinId;
+  const mapId = c.req.param('mapId');
+  const pinId = c.req.param('pinId');
 
   // Verify ownership
   const map = await c.env.DB.prepare(

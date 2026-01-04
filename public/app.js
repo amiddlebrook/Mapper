@@ -454,7 +454,16 @@ async function handleAddItem(e) {
             });
 
             if (!res.ok) {
-                const err = await res.json();
+                const text = await res.text();
+                let err;
+
+                try {
+                    err = JSON.parse(text);
+                } catch (parseError) {
+                    console.error('Failed to parse error response:', text);
+                    throw new Error(`Failed to save to cloud (HTTP ${res.status})`);
+                }
+
                 throw new Error(err.error || 'Failed to save to cloud');
             }
 

@@ -359,61 +359,63 @@ app.get('/api/maps/:mapId/pins', async (c) => {
   return c.json(pins.results || []);
 });
 
-try {
-  const userId = c.get('userId');
-  const mapId = c.params.mapId;
-  const { url, address, lat, lng, type, custom_type } = await c.req.json();
+app.post('/api/maps/:mapId/pins', authenticate, async (c) => {
+  try {
+    const userId = c.get('userId');
+    const mapId = c.params.mapId;
+    const { url, address, lat, lng, type, custom_type } = await c.req.json();
 
-  // Verify ownership
-  const map = await c.env.DB.prepare(
-    'SELECT user_id FROM maps WHERE id = ?'
-  ).bind(mapId).first();
+    // Verify ownership
+    const map = await c.env.DB.prepare(
+      'SELECT user_id FROM maps WHERE id = ?'
+    ).bind(mapId).first();
 
-  if (!map || map.user_id !== userId) {
-    return c.json({ error: 'Map not found or unauthorized' }, 403);
+    if (!map || map.user_id !== userId) {
+      return c.json({ error: 'Map not found or unauthorized' }, 403);
+    }
+
+    // Validate required fields
+    if (!url || !address || lat === undefined || lng === undefined || !type) {
+      return c.json({ error: 'Missing required fields' }, 400);
+    }
+
+    // Validate type
+    const validTypes = ['Housing', 'Job', 'Park', 'Custom'];
+    if (!validTypes.includes(type)) {
+      return c.json({ error: 'Invalid type' }, 400);
+    }
+
+    // Normalize URL
+    const normalizedUrl = normalizeUrl(url);
+
+    // Check for duplicate URL
+    const existing = await c.env.DB.prepare(
+      'SELECT id FROM pins WHERE map_id = ? AND url = ?'
+    ).bind(mapId, normalizedUrl).first();
+
+    if (existing) {
+      return c.json({ error: 'This URL has already been added to this map' }, 409);
+    }
+
+    const pinId = crypto.randomUUID();
+
+    await c.env.DB.prepare(
+      'INSERT INTO pins (id, map_id, url, address, lat, lng, type, custom_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).bind(pinId, mapId, normalizedUrl, address, lat, lng, type, custom_type || null).run();
+
+    return c.json({
+      id: pinId,
+      url: normalizedUrl,
+      address,
+      lat,
+      lng,
+      type,
+      custom_type
+    });
+  } catch (e) {
+    return c.json({ error: e.message, stack: e.stack }, 500);
   }
-
-  // Validate required fields
-  if (!url || !address || lat === undefined || lng === undefined || !type) {
-    return c.json({ error: 'Missing required fields' }, 400);
-  }
-
-  // Validate type
-  const validTypes = ['Housing', 'Job', 'Park', 'Custom'];
-  if (!validTypes.includes(type)) {
-    return c.json({ error: 'Invalid type' }, 400);
-  }
-
-  // Normalize URL
-  const normalizedUrl = normalizeUrl(url);
-
-  // Check for duplicate URL
-  const existing = await c.env.DB.prepare(
-    'SELECT id FROM pins WHERE map_id = ? AND url = ?'
-  ).bind(mapId, normalizedUrl).first();
-
-  if (existing) {
-    return c.json({ error: 'This URL has already been added to this map' }, 409);
-  }
-
-  const pinId = crypto.randomUUID();
-
-  await c.env.DB.prepare(
-    'INSERT INTO pins (id, map_id, url, address, lat, lng, type, custom_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-  ).bind(pinId, mapId, normalizedUrl, address, lat, lng, type, custom_type || null).run();
-
-  return c.json({
-    id: pinId,
-    url: normalizedUrl,
-    address,
-    lat,
-    lng,
-    type,
-    custom_type
-  });
-} catch (e) {
-  return c.json({ error: e.message, stack: e.stack }, 500);
-}
+});
 
 app.delete('/api/maps/:mapId/pins/:pinId', authenticate, async (c) => {
   const userId = c.get('userId');

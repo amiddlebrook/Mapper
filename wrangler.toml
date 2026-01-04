@@ -9,7 +9,7 @@ ENVIRONMENT = "production"
 [[d1_databases]]
 binding = "DB"
 database_name = "mapper_db"
-database_id = "preview-database-id"
+database_id = "f0324c27-590d-40fa-adbf-ca4704e99b33"
 
 # KV for sessions (optional - currently using D1 for sessions)
 [[kv_namespaces]]

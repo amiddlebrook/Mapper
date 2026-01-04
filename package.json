@@ -1,0 +1,17 @@
+{
+  "name": "mapper",
+  "version": "1.0.0",
+  "description": "Cloudflare-native mapping application",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler pages dev public --d1 DB=mapper_db --kv SESSIONS",
+    "deploy": "wrangler pages deploy public",
+    "db:migrate": "wrangler d1 execute mapper_db --file=./schema.sql"
+  },
+  "dependencies": {
+    "hono": "^3.11.7"
+  },
+  "devDependencies": {
+    "wrangler": "^3.22.1"
+  }
+}

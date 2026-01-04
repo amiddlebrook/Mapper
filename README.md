@@ -86,7 +86,22 @@ Organize locations for research, field work, or any project that involves physic
 
 Mapper is deployed at **[list-mapper.com](https://list-mapper.com)** on Cloudflare Pages.
 
-For domain configuration and deployment instructions, see [DOMAIN_SETUP.md](./DOMAIN_SETUP.md).
+### Important Documentation
+
+- **[DEPLOYMENT_FIX.md](./DEPLOYMENT_FIX.md)** - Fix deployment errors (read this first if deploys are failing)
+- **[DOMAIN_SETUP.md](./DOMAIN_SETUP.md)** - Custom domain configuration guide
+
+### Quick Deploy
+
+```bash
+# Deploy manually
+npm run deploy
+
+# Or use GitHub integration (recommended)
+git push origin main  # Cloudflare auto-deploys
+```
+
+**Note**: This is a Cloudflare Pages project. Use `wrangler pages deploy`, not `wrangler deploy`.
 
 ## Support
 

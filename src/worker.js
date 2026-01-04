@@ -8,7 +8,7 @@ app.onError((err, c) => {
   return c.json({ error: 'Internal Server Error', details: err.message, stack: err.stack }, 500);
 });
 
-app.use('/*', cors());
+app.use('/*', cors({ allowHeaders: ['Content-Type', 'X-Session-ID'] }));
 
 // Middleware to check authentication
 const authenticate = async (c, next) => {

@@ -359,7 +359,7 @@ app.get('/api/maps/:mapId/pins', async (c) => {
   return c.json(pins.results || []);
 });
 
-app.post('/api/maps/:mapId/pins', authenticate, async (c) => {
+try {
   const userId = c.get('userId');
   const mapId = c.params.mapId;
   const { url, address, lat, lng, type, custom_type } = await c.req.json();
@@ -411,7 +411,9 @@ app.post('/api/maps/:mapId/pins', authenticate, async (c) => {
     type,
     custom_type
   });
-});
+} catch (e) {
+  return c.json({ error: e.message, stack: e.stack }, 500);
+}
 
 app.delete('/api/maps/:mapId/pins/:pinId', authenticate, async (c) => {
   const userId = c.get('userId');

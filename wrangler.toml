@@ -1,23 +1,17 @@
 name = "mapper"
 compatibility_date = "2024-01-01"
-main = "src/worker.js"
+pages_build_output_dir = "public"
 
 [vars]
 ENVIRONMENT = "production"
 
-# D1 Database
+# D1 Database binding for production
 [[d1_databases]]
 binding = "DB"
 database_name = "mapper_db"
 database_id = "f0324c27-590d-40fa-adbf-ca4704e99b33"
 
-# KV for sessions (optional - currently using D1 for sessions)
+# KV namespace for sessions (optional - currently using D1 for sessions)
 [[kv_namespaces]]
 binding = "SESSIONS_MAPPER"
 id = "b6312c0de1a847fea67a47d2242390cd"
-
-[build]
-command = ""
-
-[[pages]]
-project_name = "mapper"

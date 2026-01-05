@@ -495,13 +495,32 @@ app.get('/api/geocode', async (c) => {
     const feature = mapboxData?.features?.[0];
 
     if (!feature) {
-      return c.json({ error: 'Address not found' }, 404);
+      // Fall through to Census Geocoder before returning 404.
+    } else {
+      return c.json({
+        address: feature.place_name,
+        lat: feature.center[1],
+        lng: feature.center[0]
+      });
     }
+  }
 
+  const censusUrl = `https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=${encodeURIComponent(normalizedAddress)}&benchmark=2020&format=json`;
+  const censusResponse = await fetch(censusUrl);
+
+  if (!censusResponse.ok) {
+    const detail = await censusResponse.text();
+    return c.json({ error: 'Geocoding failed', details: detail }, 502);
+  }
+
+  const censusData = await censusResponse.json();
+  const censusMatch = censusData?.result?.addressMatches?.[0];
+
+  if (censusMatch) {
     return c.json({
-      address: feature.place_name,
-      lat: feature.center[1],
-      lng: feature.center[0]
+      address: censusMatch.matchedAddress || censusMatch.address || normalizedAddress,
+      lat: parseFloat(censusMatch.coordinates?.y),
+      lng: parseFloat(censusMatch.coordinates?.x)
     });
   }
 

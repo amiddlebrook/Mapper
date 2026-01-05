@@ -449,8 +449,10 @@ app.get('/api/geocode', authenticate, async (c) => {
     return c.json({ error: 'Address is required' }, 400);
   }
 
+  const normalizedAddress = normalizeAddressInput(address);
+
   // Using OpenStreetMap Nominatim (free, no API key required)
-  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1`;
+  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(normalizedAddress)}&format=json&limit=1`;
 
   const response = await fetch(url, {
     headers: {
@@ -490,6 +492,42 @@ function normalizeUrl(url) {
   normalized = normalized.replace(/^www\./, '');
 
   return normalized.toLowerCase();
+}
+
+function normalizeAddressInput(address) {
+  const trimmed = address.trim();
+  const parsedUrl = tryParseUrl(trimmed);
+
+  if (!parsedUrl) {
+    return trimmed;
+  }
+
+  const hostname = parsedUrl.hostname.replace(/^www\./, '');
+
+  if (hostname.endsWith('zillow.com')) {
+    const match = parsedUrl.pathname.match(/\/homedetails\/([^/]+)/i);
+    if (match) {
+      return decodeAddressSlug(match[1]);
+    }
+  }
+
+  return trimmed;
+}
+
+function tryParseUrl(value) {
+  const hasProtocol = /^https?:\/\//i.test(value);
+  const candidate = hasProtocol ? value : `https://${value}`;
+
+  try {
+    return new URL(candidate);
+  } catch {
+    return null;
+  }
+}
+
+function decodeAddressSlug(slug) {
+  const decoded = decodeURIComponent(slug);
+  return decoded.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 export default {

@@ -468,7 +468,32 @@ app.get('/api/geocode', async (c) => {
   const data = await response.json();
 
   if (!data || data.length === 0) {
-    return c.json({ error: 'Address not found' }, 404);
+    const mapboxToken = c.env.MAPBOX_TOKEN;
+
+    if (!mapboxToken) {
+      return c.json({ error: 'Address not found' }, 404);
+    }
+
+    const mapboxUrl = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(normalizedAddress)}.json?access_token=${mapboxToken}&limit=1`;
+    const mapboxResponse = await fetch(mapboxUrl);
+
+    if (!mapboxResponse.ok) {
+      const detail = await mapboxResponse.text();
+      return c.json({ error: 'Geocoding failed', details: detail }, 502);
+    }
+
+    const mapboxData = await mapboxResponse.json();
+    const feature = mapboxData?.features?.[0];
+
+    if (!feature) {
+      return c.json({ error: 'Address not found' }, 404);
+    }
+
+    return c.json({
+      address: feature.place_name,
+      lat: feature.center[1],
+      lng: feature.center[0]
+    });
   }
 
   const result = data[0];

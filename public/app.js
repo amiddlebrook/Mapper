@@ -401,6 +401,23 @@ async function handleAddItem(e) {
         const geocodeResponse = await fetch(`${API_BASE}/api/geocode?address=${encodeURIComponent(geocodeQuery)}`, {
             headers: state.sessionId ? { 'X-Session-ID': state.sessionId } : undefined
         });
+        if (!geocodeResponse.ok) {
+            const errorText = await geocodeResponse.text();
+            let errorDetail = 'Geocoding failed; please try again later.';
+
+            if (errorText) {
+                try {
+                    const parsedError = JSON.parse(errorText);
+                    errorDetail = parsedError.error || parsedError.message || errorDetail;
+                } catch (parseError) {
+                    errorDetail = errorText;
+                }
+            }
+
+            throw new Error(errorDetail);
+        }
+
+        const geocodeData = await geocodeResponse.json();
 
         if (!geocodeResponse.ok) {
             const errorPayload = await geocodeResponse.json();

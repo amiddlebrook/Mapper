@@ -532,7 +532,23 @@ function tryParseUrl(value) {
 
 function decodeAddressSlug(slug) {
   const decoded = decodeURIComponent(slug);
-  return decoded.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const normalized = decoded.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const commaNormalized = normalized.replace(/\s*,\s*/g, ', ').trim();
+
+  if (commaNormalized.includes(',')) {
+    return commaNormalized;
+  }
+
+  const cityStateZipPattern =
+    /^(.*)\s+([A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*)*)\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)$/;
+  const match = commaNormalized.match(cityStateZipPattern);
+
+  if (match) {
+    const [, street, city, state, zip] = match;
+    return `${street.trim()}, ${city}, ${state} ${zip}`;
+  }
+
+  return commaNormalized;
 }
 
 export default {

@@ -418,13 +418,6 @@ async function handleAddItem(e) {
         }
 
         const geocodeData = await geocodeResponse.json();
-
-        if (!geocodeResponse.ok) {
-            const errorPayload = await geocodeResponse.json();
-            throw new Error(errorPayload.error || 'Address not found. Try a more specific address.');
-        }
-
-        const geocodeData = await geocodeResponse.json();
         const lat = geocodeData.lat;
         const lng = geocodeData.lng;
         const fullAddress = geocodeData.address;

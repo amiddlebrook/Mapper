@@ -451,29 +451,38 @@ app.get('/api/geocode', async (c) => {
 
   const normalizedAddress = normalizeAddressInput(address);
 
-  // Using OpenStreetMap Nominatim (free, no API key required)
-  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(normalizedAddress)}&format=json&limit=1`;
+  const nominatimUrls = buildNominatimUrls(normalizedAddress);
+  let nominatimError = null;
 
-  const response = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mapper/1.0'
+  for (const url of nominatimUrls) {
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mapper/1.0'
+      }
+    });
+
+    if (!response.ok) {
+      nominatimError = await response.text();
+      continue;
     }
-  });
 
-  if (!response.ok) {
-    const detail = await response.text();
-    return c.json({ error: 'Geocoding failed', details: detail }, 502);
+    const data = await response.json();
+    if (!data || data.length === 0) {
+      continue;
+    }
+
+    const result = data[0];
+
+    return c.json({
+      address: result.display_name,
+      lat: parseFloat(result.lat),
+      lng: parseFloat(result.lon)
+    });
   }
 
-  const data = await response.json();
+  const mapboxToken = c.env.MAPBOX_TOKEN;
 
-  if (!data || data.length === 0) {
-    const mapboxToken = c.env.MAPBOX_TOKEN;
-
-    if (!mapboxToken) {
-      return c.json({ error: 'Address not found' }, 404);
-    }
-
+  if (mapboxToken) {
     const mapboxUrl = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(normalizedAddress)}.json?access_token=${mapboxToken}&limit=1`;
     const mapboxResponse = await fetch(mapboxUrl);
 
@@ -496,13 +505,11 @@ app.get('/api/geocode', async (c) => {
     });
   }
 
-  const result = data[0];
+  if (nominatimError) {
+    return c.json({ error: 'Geocoding failed', details: nominatimError }, 502);
+  }
 
-  return c.json({
-    address: result.display_name,
-    lat: parseFloat(result.lat),
-    lng: parseFloat(result.lon)
-  });
+  return c.json({ error: 'Address not found' }, 404);
 });
 
 // ============================================
@@ -574,6 +581,67 @@ function decodeAddressSlug(slug) {
   }
 
   return commaNormalized;
+}
+
+function buildNominatimUrls(address) {
+  const baseUrl = 'https://nominatim.openstreetmap.org/search';
+  const urls = [
+    `${baseUrl}?q=${encodeURIComponent(address)}&format=json&limit=1`
+  ];
+
+  const parsed = parseUsAddress(address);
+  if (parsed) {
+    const params = new URLSearchParams({
+      street: parsed.street,
+      city: parsed.city,
+      state: parsed.state,
+      countrycodes: 'us',
+      format: 'json',
+      limit: '1'
+    });
+
+    if (parsed.zip) {
+      params.set('postalcode', parsed.zip);
+    }
+
+    urls.push(`${baseUrl}?${params.toString()}`);
+  }
+
+  return urls;
+}
+
+function parseUsAddress(address) {
+  const normalized = address.replace(/\s+/g, ' ').trim();
+  const commaNormalized = normalized.replace(/\s*,\s*/g, ', ');
+  const commaMatch = commaNormalized.match(
+    /^(.*?),\s*([^,]+),\s*([A-Z]{2})\s*(\d{5}(?:-\d{4})?)?$/i
+  );
+
+  if (commaMatch) {
+    const [, street, city, state, zip] = commaMatch;
+    return {
+      street: street.trim(),
+      city: city.trim(),
+      state: state.toUpperCase(),
+      zip: zip ? zip.trim() : ''
+    };
+  }
+
+  const spaceMatch = normalized.match(
+    /^(.*)\s+([A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*)*)\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)$/
+  );
+
+  if (!spaceMatch) {
+    return null;
+  }
+
+  const [, street, city, state, zip] = spaceMatch;
+  return {
+    street: street.trim(),
+    city: city.trim(),
+    state: state.toUpperCase(),
+    zip: zip.trim()
+  };
 }
 
 export default {

@@ -400,6 +400,22 @@ async function handleAddItem(e) {
         const geocodeResponse = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1`, {
             headers: { 'User-Agent': 'ListMapper/1.0' }
         });
+        if (!geocodeResponse.ok) {
+            const errorText = await geocodeResponse.text();
+            let errorDetail = 'Geocoding failed; please try again later.';
+
+            if (errorText) {
+                try {
+                    const parsedError = JSON.parse(errorText);
+                    errorDetail = parsedError.error || parsedError.message || errorDetail;
+                } catch (parseError) {
+                    errorDetail = errorText;
+                }
+            }
+
+            throw new Error(errorDetail);
+        }
+
         const geocodeData = await geocodeResponse.json();
 
         if (!geocodeData || geocodeData.length === 0) {

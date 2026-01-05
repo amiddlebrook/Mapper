@@ -397,8 +397,9 @@ async function handleAddItem(e) {
 
     try {
         // Geocode
-        const geocodeResponse = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1`, {
-            headers: { 'User-Agent': 'ListMapper/1.0' }
+        const geocodeQuery = address.trim() || url.trim();
+        const geocodeResponse = await fetch(`${API_BASE}/api/geocode?address=${encodeURIComponent(geocodeQuery)}`, {
+            headers: state.sessionId ? { 'X-Session-ID': state.sessionId } : undefined
         });
         if (!geocodeResponse.ok) {
             const errorText = await geocodeResponse.text();
@@ -418,13 +419,15 @@ async function handleAddItem(e) {
 
         const geocodeData = await geocodeResponse.json();
 
-        if (!geocodeData || geocodeData.length === 0) {
-            throw new Error('Address not found. Try a more specific address.');
+        if (!geocodeResponse.ok) {
+            const errorPayload = await geocodeResponse.json();
+            throw new Error(errorPayload.error || 'Address not found. Try a more specific address.');
         }
 
-        const lat = parseFloat(geocodeData[0].lat);
-        const lng = parseFloat(geocodeData[0].lon);
-        const fullAddress = geocodeData[0].display_name;
+        const geocodeData = await geocodeResponse.json();
+        const lat = geocodeData.lat;
+        const lng = geocodeData.lng;
+        const fullAddress = geocodeData.address;
 
         // Normalize URL
         let normalizedUrl = url.trim()

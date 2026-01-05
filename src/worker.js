@@ -442,7 +442,7 @@ app.delete('/api/maps/:mapId/pins/:pinId', authenticate, async (c) => {
 // Geocoding Proxy
 // ============================================
 
-app.get('/api/geocode', authenticate, async (c) => {
+app.get('/api/geocode', async (c) => {
   const address = c.req.query('address');
 
   if (!address) {
@@ -459,6 +459,11 @@ app.get('/api/geocode', authenticate, async (c) => {
       'User-Agent': 'Mapper/1.0'
     }
   });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    return c.json({ error: 'Geocoding failed', details: detail }, 502);
+  }
 
   const data = await response.json();
 

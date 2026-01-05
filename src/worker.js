@@ -586,7 +586,7 @@ function decodeAddressSlug(slug) {
 function buildNominatimUrls(address) {
   const baseUrl = 'https://nominatim.openstreetmap.org/search';
   const urls = [
-    `${baseUrl}?q=${encodeURIComponent(address)}&format=json&limit=1`
+    `${baseUrl}?q=${encodeURIComponent(address)}&countrycodes=us&format=json&limit=1`
   ];
 
   const parsed = parseUsAddress(address);

@@ -8,9 +8,107 @@ app.onError((err, c) => {
   return c.json({ error: 'Internal Server Error', details: err.message, stack: err.stack }, 500);
 });
 
-app.use('/*', cors({ allowHeaders: ['Content-Type', 'X-Session-ID'] }));
+app.use('/*', cors({ allowHeaders: ['Content-Type', 'X-Session-ID', 'X-API-Key'] }));
 
-// Middleware to check authentication
+// ============================================
+// Rate Limits by Tier
+// ============================================
+const TIER_LIMITS = {
+  free: 50,      // 50 requests per day
+  pro: 1000,     // 1000 requests per day
+  enterprise: -1 // Unlimited
+};
+
+// ============================================
+// API Key Utilities
+// ============================================
+
+async function hashApiKey(key) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(key);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function generateApiKey() {
+  const prefix = 'lm_';
+  const randomPart = Array.from(crypto.getRandomValues(new Uint8Array(24)))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+  return prefix + randomPart;
+}
+
+// ============================================
+// API Key Validation Middleware
+// ============================================
+
+const validateApiKey = async (c, next) => {
+  const apiKey = c.req.header('X-API-Key');
+
+  if (!apiKey) {
+    return c.json({
+      error: 'API key required',
+      message: 'Please provide a valid API key in the X-API-Key header. Get your key at list-mapper.com/pricing'
+    }, 401);
+  }
+
+  const keyHash = await hashApiKey(apiKey);
+  const today = new Date().toISOString().split('T')[0];
+
+  const keyRecord = await c.env.DB.prepare(
+    'SELECT id, tier, requests_today, last_request_date, is_active, expires_at FROM api_keys WHERE key_hash = ?'
+  ).bind(keyHash).first();
+
+  if (!keyRecord) {
+    return c.json({
+      error: 'Invalid API key',
+      message: 'The provided API key is not valid. Get your key at list-mapper.com/pricing'
+    }, 401);
+  }
+
+  if (!keyRecord.is_active) {
+    return c.json({
+      error: 'API key inactive',
+      message: 'Your API key has been deactivated. Please contact support or get a new key.'
+    }, 403);
+  }
+
+  if (keyRecord.expires_at && keyRecord.expires_at < Math.floor(Date.now() / 1000)) {
+    return c.json({
+      error: 'API key expired',
+      message: 'Your API key has expired. Please renew your subscription at list-mapper.com/pricing'
+    }, 403);
+  }
+
+  // Check rate limits
+  let requestsToday = keyRecord.requests_today;
+  if (keyRecord.last_request_date !== today) {
+    requestsToday = 0;
+  }
+
+  const limit = TIER_LIMITS[keyRecord.tier];
+  if (limit !== -1 && requestsToday >= limit) {
+    return c.json({
+      error: 'Rate limit exceeded',
+      message: `You have exceeded your daily limit of ${limit} requests. Upgrade your plan at list-mapper.com/pricing`,
+      tier: keyRecord.tier,
+      limit: limit,
+      used: requestsToday
+    }, 429);
+  }
+
+  // Update request count
+  await c.env.DB.prepare(
+    'UPDATE api_keys SET requests_today = ?, last_request_date = ? WHERE id = ?'
+  ).bind(requestsToday + 1, today, keyRecord.id).run();
+
+  c.set('apiKeyId', keyRecord.id);
+  c.set('apiKeyTier', keyRecord.tier);
+  await next();
+};
+
+// Middleware to check authentication (requires valid API key first)
 const authenticate = async (c, next) => {
   const sessionId = c.req.header('X-Session-ID');
 
@@ -30,14 +128,183 @@ const authenticate = async (c, next) => {
   await next();
 };
 
+// Combined middleware: API Key + Auth
+const requireApiKeyAndAuth = async (c, next) => {
+  // First validate API key
+  const apiKeyResult = await new Promise((resolve) => {
+    validateApiKey(c, () => resolve(true)).then(response => {
+      if (response) resolve(response);
+    });
+  });
+
+  if (apiKeyResult !== true) {
+    return apiKeyResult;
+  }
+
+  // Then validate session
+  return authenticate(c, next);
+};
+
 // ============================================
-// Authentication Routes
+// API Key Management Routes (No API key required)
 // ============================================
 
-// Google OAuth - Start
+// Generate a new API key (email required)
+app.post('/api/keys/generate', async (c) => {
+  const { email } = await c.req.json();
+
+  if (!email || !email.includes('@')) {
+    return c.json({ error: 'Valid email is required' }, 400);
+  }
+
+  // Check if email already has an active key
+  const existingKey = await c.env.DB.prepare(
+    'SELECT id, tier, is_active FROM api_keys WHERE email = ? AND is_active = 1'
+  ).bind(email).first();
+
+  if (existingKey) {
+    return c.json({
+      error: 'Email already has an active API key',
+      message: 'Use the validate endpoint to check your existing key, or contact support to retrieve it.'
+    }, 409);
+  }
+
+  // Generate new key
+  const apiKey = generateApiKey();
+  const keyHash = await hashApiKey(apiKey);
+  const keyId = crypto.randomUUID();
+
+  // Free tier: 30-day expiration
+  const expiresAt = Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60);
+
+  await c.env.DB.prepare(
+    'INSERT INTO api_keys (id, key_hash, email, tier, expires_at) VALUES (?, ?, ?, ?, ?)'
+  ).bind(keyId, keyHash, email, 'free', expiresAt).run();
+
+  return c.json({
+    success: true,
+    apiKey: apiKey,
+    tier: 'free',
+    expiresAt: new Date(expiresAt * 1000).toISOString(),
+    dailyLimit: TIER_LIMITS.free,
+    message: 'Save this API key securely - it will only be shown once!'
+  });
+});
+
+// Validate an API key (returns status without counting toward rate limit)
+app.post('/api/keys/validate', async (c) => {
+  const { apiKey } = await c.req.json();
+
+  if (!apiKey) {
+    return c.json({ error: 'API key is required' }, 400);
+  }
+
+  const keyHash = await hashApiKey(apiKey);
+  const today = new Date().toISOString().split('T')[0];
+
+  const keyRecord = await c.env.DB.prepare(
+    'SELECT id, email, tier, requests_today, last_request_date, is_active, expires_at, created_at FROM api_keys WHERE key_hash = ?'
+  ).bind(keyHash).first();
+
+  if (!keyRecord) {
+    return c.json({
+      valid: false,
+      error: 'Invalid API key'
+    });
+  }
+
+  const isExpired = keyRecord.expires_at && keyRecord.expires_at < Math.floor(Date.now() / 1000);
+  const requestsToday = keyRecord.last_request_date === today ? keyRecord.requests_today : 0;
+  const limit = TIER_LIMITS[keyRecord.tier];
+
+  return c.json({
+    valid: keyRecord.is_active && !isExpired,
+    email: keyRecord.email,
+    tier: keyRecord.tier,
+    isActive: !!keyRecord.is_active,
+    isExpired: isExpired,
+    expiresAt: keyRecord.expires_at ? new Date(keyRecord.expires_at * 1000).toISOString() : null,
+    usage: {
+      today: requestsToday,
+      limit: limit === -1 ? 'unlimited' : limit,
+      remaining: limit === -1 ? 'unlimited' : Math.max(0, limit - requestsToday)
+    },
+    createdAt: new Date(keyRecord.created_at * 1000).toISOString()
+  });
+});
+
+// Get pricing info (public)
+app.get('/api/keys/pricing', async (c) => {
+  return c.json({
+    tiers: {
+      free: {
+        name: 'Free',
+        price: '$0/month',
+        dailyLimit: TIER_LIMITS.free,
+        features: ['50 API calls per day', '30-day key expiration', 'Basic support'],
+        cta: 'Get Started Free'
+      },
+      pro: {
+        name: 'Pro',
+        price: '$9.99/month',
+        dailyLimit: TIER_LIMITS.pro,
+        features: ['1,000 API calls per day', 'No key expiration', 'Priority support', 'Export to CSV'],
+        cta: 'Upgrade to Pro',
+        paymentLink: 'https://buy.stripe.com/listmapper-pro'
+      },
+      enterprise: {
+        name: 'Enterprise',
+        price: '$49.99/month',
+        dailyLimit: 'Unlimited',
+        features: ['Unlimited API calls', 'No key expiration', 'Dedicated support', 'Custom integrations', 'SLA'],
+        cta: 'Contact Sales',
+        paymentLink: 'https://buy.stripe.com/listmapper-enterprise'
+      }
+    }
+  });
+});
+
+// ============================================
+// Authentication Routes (Require API Key)
+// ============================================
+
+// Google OAuth - Start (API key passed as query param, stored in state)
 app.get('/api/auth/google', async (c) => {
+  const apiKey = c.req.query('api_key');
+
+  if (!apiKey) {
+    return c.json({
+      error: 'API key required',
+      message: 'Please provide your API key as a query parameter: /api/auth/google?api_key=YOUR_KEY'
+    }, 401);
+  }
+
+  // Validate API key before starting OAuth
+  const keyHash = await hashApiKey(apiKey);
+  const keyRecord = await c.env.DB.prepare(
+    'SELECT id, is_active, expires_at FROM api_keys WHERE key_hash = ?'
+  ).bind(keyHash).first();
+
+  if (!keyRecord || !keyRecord.is_active) {
+    return c.json({
+      error: 'Invalid API key',
+      message: 'The provided API key is not valid. Get your key at list-mapper.com/pricing'
+    }, 401);
+  }
+
+  if (keyRecord.expires_at && keyRecord.expires_at < Math.floor(Date.now() / 1000)) {
+    return c.json({
+      error: 'API key expired',
+      message: 'Your API key has expired. Please renew at list-mapper.com/pricing'
+    }, 403);
+  }
+
   const clientId = c.env.GOOGLE_CLIENT_ID;
   const redirectUri = `${new URL(c.req.url).origin}/api/auth/google/callback`;
+
+  // Store API key in state to validate on callback
+  const stateData = JSON.stringify({ apiKey: apiKey });
+  const stateEncoded = btoa(stateData);
 
   const params = new URLSearchParams({
     client_id: clientId,
@@ -45,7 +312,8 @@ app.get('/api/auth/google', async (c) => {
     response_type: 'code',
     scope: 'openid email profile',
     access_type: 'offline',
-    prompt: 'consent'
+    prompt: 'consent',
+    state: stateEncoded
   });
 
   return c.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
@@ -55,9 +323,40 @@ app.get('/api/auth/google', async (c) => {
 app.get('/api/auth/google/callback', async (c) => {
   const code = c.req.query('code');
   const error = c.req.query('error');
+  const stateParam = c.req.query('state');
 
   if (error || !code) {
     return c.redirect(`/?error=auth_failed&detail=${error || 'no_code'}`);
+  }
+
+  // Validate API key from state
+  if (!stateParam) {
+    return c.redirect('/?error=missing_api_key');
+  }
+
+  let apiKey;
+  try {
+    const stateData = JSON.parse(atob(stateParam));
+    apiKey = stateData.apiKey;
+  } catch (e) {
+    return c.redirect('/?error=invalid_state');
+  }
+
+  if (!apiKey) {
+    return c.redirect('/?error=missing_api_key');
+  }
+
+  const keyHash = await hashApiKey(apiKey);
+  const keyRecord = await c.env.DB.prepare(
+    'SELECT id, is_active, expires_at FROM api_keys WHERE key_hash = ?'
+  ).bind(keyHash).first();
+
+  if (!keyRecord || !keyRecord.is_active) {
+    return c.redirect('/?error=invalid_api_key');
+  }
+
+  if (keyRecord.expires_at && keyRecord.expires_at < Math.floor(Date.now() / 1000)) {
+    return c.redirect('/?error=api_key_expired');
   }
 
   const clientId = c.env.GOOGLE_CLIENT_ID;
@@ -135,8 +434,8 @@ app.get('/api/auth/google/callback', async (c) => {
   }
 });
 
-// Simple email-based login (magic link simulation)
-app.post('/api/auth/login', async (c) => {
+// Simple email-based login (magic link simulation) - requires API key
+app.post('/api/auth/login', validateApiKey, async (c) => {
   const { email } = await c.req.json();
 
   if (!email || !email.includes('@')) {
@@ -171,7 +470,7 @@ app.post('/api/auth/login', async (c) => {
   });
 });
 
-app.post('/api/auth/logout', authenticate, async (c) => {
+app.post('/api/auth/logout', validateApiKey, authenticate, async (c) => {
   const sessionId = c.req.header('X-Session-ID');
 
   await c.env.DB.prepare(
@@ -181,7 +480,7 @@ app.post('/api/auth/logout', authenticate, async (c) => {
   return c.json({ success: true });
 });
 
-app.get('/api/auth/me', authenticate, async (c) => {
+app.get('/api/auth/me', validateApiKey, authenticate, async (c) => {
   const userId = c.get('userId');
 
   const user = await c.env.DB.prepare(
@@ -192,10 +491,10 @@ app.get('/api/auth/me', authenticate, async (c) => {
 });
 
 // ============================================
-// Maps Routes
+// Maps Routes (Require API Key)
 // ============================================
 
-app.get('/api/maps', authenticate, async (c) => {
+app.get('/api/maps', validateApiKey, authenticate, async (c) => {
   try {
     const userId = c.get('userId');
 
@@ -231,7 +530,7 @@ app.get('/api/maps', authenticate, async (c) => {
   }
 });
 
-app.post('/api/maps', authenticate, async (c) => {
+app.post('/api/maps', validateApiKey, authenticate, async (c) => {
   const userId = c.get('userId');
   const { name, description, is_public } = await c.req.json();
 
@@ -253,7 +552,7 @@ app.post('/api/maps', authenticate, async (c) => {
   });
 });
 
-app.get('/api/maps/:id', async (c) => {
+app.get('/api/maps/:id', validateApiKey, async (c) => {
   const mapId = c.req.param('id');
   const sessionId = c.req.header('X-Session-ID');
 
@@ -283,7 +582,7 @@ app.get('/api/maps/:id', async (c) => {
   return c.json(map);
 });
 
-app.put('/api/maps/:id', authenticate, async (c) => {
+app.put('/api/maps/:id', validateApiKey, authenticate, async (c) => {
   const userId = c.get('userId');
   const mapId = c.req.param('id');
   const { name, description, is_public } = await c.req.json();
@@ -304,7 +603,7 @@ app.put('/api/maps/:id', authenticate, async (c) => {
   return c.json({ success: true });
 });
 
-app.delete('/api/maps/:id', authenticate, async (c) => {
+app.delete('/api/maps/:id', validateApiKey, authenticate, async (c) => {
   const userId = c.get('userId');
   const mapId = c.req.param('id');
 
@@ -322,10 +621,10 @@ app.delete('/api/maps/:id', authenticate, async (c) => {
 });
 
 // ============================================
-// Pins Routes
+// Pins Routes (Require API Key)
 // ============================================
 
-app.get('/api/maps/:mapId/pins', async (c) => {
+app.get('/api/maps/:mapId/pins', validateApiKey, async (c) => {
   const mapId = c.req.param('mapId');
   const sessionId = c.req.header('X-Session-ID');
 
@@ -359,7 +658,7 @@ app.get('/api/maps/:mapId/pins', async (c) => {
   return c.json(pins.results || []);
 });
 
-app.post('/api/maps/:mapId/pins', authenticate, async (c) => {
+app.post('/api/maps/:mapId/pins', validateApiKey, authenticate, async (c) => {
   try {
     const userId = c.get('userId');
     const mapId = c.req.param('mapId');
@@ -417,7 +716,7 @@ app.post('/api/maps/:mapId/pins', authenticate, async (c) => {
   }
 });
 
-app.delete('/api/maps/:mapId/pins/:pinId', authenticate, async (c) => {
+app.delete('/api/maps/:mapId/pins/:pinId', validateApiKey, authenticate, async (c) => {
   const userId = c.get('userId');
   const mapId = c.req.param('mapId');
   const pinId = c.req.param('pinId');
@@ -439,10 +738,10 @@ app.delete('/api/maps/:mapId/pins/:pinId', authenticate, async (c) => {
 });
 
 // ============================================
-// Geocoding Proxy
+// Geocoding Proxy (Requires API Key)
 // ============================================
 
-app.get('/api/geocode', async (c) => {
+app.get('/api/geocode', validateApiKey, async (c) => {
   const address = c.req.query('address');
 
   if (!address) {

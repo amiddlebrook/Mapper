@@ -48,3 +48,20 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+
+-- API Keys table for monetization
+CREATE TABLE IF NOT EXISTS api_keys (
+    id TEXT PRIMARY KEY,
+    key_hash TEXT UNIQUE NOT NULL,
+    email TEXT NOT NULL,
+    tier TEXT NOT NULL DEFAULT 'free' CHECK(tier IN ('free', 'pro', 'enterprise')),
+    requests_today INTEGER NOT NULL DEFAULT 0,
+    last_request_date TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+    expires_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash);
+CREATE INDEX IF NOT EXISTS idx_api_keys_email ON api_keys(email);
+CREATE INDEX IF NOT EXISTS idx_api_keys_is_active ON api_keys(is_active);

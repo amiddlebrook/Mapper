@@ -6,6 +6,9 @@ const DEFAULT_LISTS = ['Housing', 'Jobs', 'Parks'];
 
 // State
 let state = {
+    apiKey: null,
+    apiKeyValid: false,
+    apiKeyInfo: null,
     sessionId: null,
     user: null,
     isLoggedIn: false,
@@ -19,6 +22,138 @@ let state = {
     // New: Map ID for cloud sync
     mapId: null
 };
+
+// ============================================
+// API Key Management
+// ============================================
+
+function getApiHeaders() {
+    const headers = {};
+    if (state.apiKey) {
+        headers['X-API-Key'] = state.apiKey;
+    }
+    if (state.sessionId) {
+        headers['X-Session-ID'] = state.sessionId;
+    }
+    return headers;
+}
+
+async function validateStoredApiKey() {
+    const storedKey = localStorage.getItem('apiKey');
+    if (!storedKey) {
+        return false;
+    }
+
+    try {
+        const response = await fetch(`${API_BASE}/api/keys/validate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ apiKey: storedKey })
+        });
+
+        const data = await response.json();
+
+        if (data.valid) {
+            state.apiKey = storedKey;
+            state.apiKeyValid = true;
+            state.apiKeyInfo = data;
+            return true;
+        } else {
+            localStorage.removeItem('apiKey');
+            return false;
+        }
+    } catch (e) {
+        console.error('API key validation failed:', e);
+        return false;
+    }
+}
+
+async function generateNewApiKey(email) {
+    try {
+        const response = await fetch(`${API_BASE}/api/keys/generate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email })
+        });
+
+        const data = await response.json();
+
+        if (response.ok && data.apiKey) {
+            state.apiKey = data.apiKey;
+            state.apiKeyValid = true;
+            state.apiKeyInfo = {
+                valid: true,
+                email: email,
+                tier: data.tier,
+                expiresAt: data.expiresAt,
+                usage: { today: 0, limit: data.dailyLimit, remaining: data.dailyLimit }
+            };
+            localStorage.setItem('apiKey', data.apiKey);
+            return { success: true, data };
+        } else {
+            return { success: false, error: data.error || data.message || 'Failed to generate API key' };
+        }
+    } catch (e) {
+        console.error('API key generation failed:', e);
+        return { success: false, error: 'Network error. Please try again.' };
+    }
+}
+
+async function activateExistingApiKey(apiKey) {
+    try {
+        const response = await fetch(`${API_BASE}/api/keys/validate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ apiKey })
+        });
+
+        const data = await response.json();
+
+        if (data.valid) {
+            state.apiKey = apiKey;
+            state.apiKeyValid = true;
+            state.apiKeyInfo = data;
+            localStorage.setItem('apiKey', apiKey);
+            return { success: true, data };
+        } else {
+            return { success: false, error: data.error || 'Invalid API key' };
+        }
+    } catch (e) {
+        console.error('API key activation failed:', e);
+        return { success: false, error: 'Network error. Please try again.' };
+    }
+}
+
+function showApiKeyGate() {
+    document.getElementById('apiKeyGate').classList.add('active');
+    document.getElementById('mainContent').classList.add('hidden');
+}
+
+function hideApiKeyGate() {
+    document.getElementById('apiKeyGate').classList.remove('active');
+    document.getElementById('mainContent').classList.remove('hidden');
+}
+
+function updateApiKeyStatus() {
+    const statusEl = document.getElementById('apiKeyStatus');
+    if (!statusEl) return;
+
+    if (state.apiKeyValid && state.apiKeyInfo) {
+        const info = state.apiKeyInfo;
+        const tierBadge = info.tier === 'free' ? 'Free' : info.tier === 'pro' ? 'Pro' : 'Enterprise';
+        const usageText = info.usage.limit === 'unlimited'
+            ? `${info.usage.today} requests today`
+            : `${info.usage.today}/${info.usage.limit} requests today`;
+
+        statusEl.innerHTML = `
+            <span class="tier-badge tier-${info.tier}">${tierBadge}</span>
+            <span class="usage-text">${usageText}</span>
+        `;
+        statusEl.classList.remove('hidden');
+    } else {
+        statusEl.classList.add('hidden');
+    }
+}
 
 // Helper: Map Frontend List Names to Backend Types
 function listNameToProps(listName) {
@@ -54,9 +189,35 @@ function getListColor(listName) {
 
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
+    // First, check for valid API key
+    const hasValidKey = await validateStoredApiKey();
+
+    if (!hasValidKey) {
+        // Show API key gate - block all functionality
+        showApiKeyGate();
+        setupApiKeyGateListeners();
+        return;
+    }
+
+    // API key is valid - proceed with app initialization
+    await initializeApp();
+});
+
+async function initializeApp() {
+    // Hide gate, show main content
+    hideApiKeyGate();
+    updateApiKeyStatus();
+
     // Check for OAuth callback in URL
     const urlParams = new URLSearchParams(window.location.search);
     const sessionFromCallback = urlParams.get('session');
+    const errorFromCallback = urlParams.get('error');
+
+    // Handle OAuth errors
+    if (errorFromCallback) {
+        alert(`Authentication error: ${errorFromCallback}`);
+        window.history.replaceState({}, document.title, window.location.pathname);
+    }
 
     if (sessionFromCallback) {
         localStorage.setItem('sessionId', sessionFromCallback);
@@ -87,7 +248,97 @@ document.addEventListener('DOMContentLoaded', async () => {
             handleLogout();
         }
     }
-});
+}
+
+function setupApiKeyGateListeners() {
+    // Get Free Key form
+    const getKeyForm = document.getElementById('getKeyForm');
+    if (getKeyForm) {
+        getKeyForm.addEventListener('submit', handleGetFreeKey);
+    }
+
+    // Existing key form
+    const existingKeyForm = document.getElementById('existingKeyForm');
+    if (existingKeyForm) {
+        existingKeyForm.addEventListener('submit', handleActivateExistingKey);
+    }
+
+    // Toggle between forms
+    const showExistingKeyLink = document.getElementById('showExistingKeyLink');
+    const showGetKeyLink = document.getElementById('showGetKeyLink');
+
+    if (showExistingKeyLink) {
+        showExistingKeyLink.addEventListener('click', (e) => {
+            e.preventDefault();
+            document.getElementById('getKeySection').classList.add('hidden');
+            document.getElementById('existingKeySection').classList.remove('hidden');
+        });
+    }
+
+    if (showGetKeyLink) {
+        showGetKeyLink.addEventListener('click', (e) => {
+            e.preventDefault();
+            document.getElementById('existingKeySection').classList.add('hidden');
+            document.getElementById('getKeySection').classList.remove('hidden');
+        });
+    }
+}
+
+async function handleGetFreeKey(e) {
+    e.preventDefault();
+    const email = document.getElementById('gateEmail').value;
+    const errorEl = document.getElementById('gateError');
+    const successEl = document.getElementById('gateSuccess');
+    const submitBtn = e.target.querySelector('button[type="submit"]');
+
+    errorEl.classList.add('hidden');
+    successEl.classList.add('hidden');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Generating...';
+
+    const result = await generateNewApiKey(email);
+
+    if (result.success) {
+        successEl.innerHTML = `
+            <strong>API Key Generated!</strong><br>
+            <code style="display: block; margin: 10px 0; padding: 10px; background: #1a1a1a; border-radius: 4px; word-break: break-all;">${result.data.apiKey}</code>
+            <small>Save this key securely - it will only be shown once!</small>
+        `;
+        successEl.classList.remove('hidden');
+
+        // Redirect to app after 3 seconds
+        setTimeout(() => {
+            initializeApp();
+        }, 3000);
+    } else {
+        errorEl.textContent = result.error;
+        errorEl.classList.remove('hidden');
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Get Free API Key';
+    }
+}
+
+async function handleActivateExistingKey(e) {
+    e.preventDefault();
+    const apiKey = document.getElementById('existingApiKey').value;
+    const errorEl = document.getElementById('existingKeyError');
+    const submitBtn = e.target.querySelector('button[type="submit"]');
+
+    errorEl.classList.add('hidden');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Validating...';
+
+    const result = await activateExistingApiKey(apiKey);
+
+    if (result.success) {
+        initializeApp();
+    } else {
+        errorEl.textContent = result.error;
+        errorEl.classList.remove('hidden');
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Activate Key';
+    }
+}
 
 // ============================================
 // Storage (Only used when Logged In)
@@ -103,7 +354,7 @@ async function loadCloudData() {
     try {
         // 1. Get User's Map
         const mapsRes = await fetch(`${API_BASE}/api/maps`, {
-            headers: { 'X-Session-ID': state.sessionId }
+            headers: getApiHeaders()
         });
         const maps = await mapsRes.json();
 
@@ -117,7 +368,7 @@ async function loadCloudData() {
 
         // 2. Get Pins
         const pinsRes = await fetch(`${API_BASE}/api/maps/${state.mapId}/pins`, {
-            headers: { 'X-Session-ID': state.sessionId }
+            headers: getApiHeaders()
         });
         const pins = await pinsRes.json();
 
@@ -360,9 +611,13 @@ function setupEventListeners() {
     // New list form
     document.getElementById('newListForm').addEventListener('submit', handleCreateList);
 
-    // Auth - Google OAuth
+    // Auth - Google OAuth (include API key in URL)
     document.getElementById('signInBtn').addEventListener('click', () => {
-        window.location.href = `${API_BASE}/api/auth/google`;
+        if (!state.apiKey) {
+            alert('API key required. Please refresh and enter your API key.');
+            return;
+        }
+        window.location.href = `${API_BASE}/api/auth/google?api_key=${encodeURIComponent(state.apiKey)}`;
     });
 
     // Profile
@@ -399,7 +654,7 @@ async function handleAddItem(e) {
         // Geocode
         const geocodeQuery = address.trim() || url.trim();
         const geocodeResponse = await fetch(`${API_BASE}/api/geocode?address=${encodeURIComponent(geocodeQuery)}`, {
-            headers: state.sessionId ? { 'X-Session-ID': state.sessionId } : undefined
+            headers: getApiHeaders()
         });
         if (!geocodeResponse.ok) {
             const errorText = await geocodeResponse.text();
@@ -452,8 +707,8 @@ async function handleAddItem(e) {
             const res = await fetch(`${API_BASE}/api/maps/${state.mapId}/pins`, {
                 method: 'POST',
                 headers: {
-                    'Content-Type': 'application/json',
-                    'X-Session-ID': state.sessionId
+                    ...getApiHeaders(),
+                    'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
                     url: normalizedUrl,
@@ -509,7 +764,7 @@ async function deleteItem(listName, itemId) {
         try {
             await fetch(`${API_BASE}/api/maps/${state.mapId}/pins/${itemId}`, {
                 method: 'DELETE',
-                headers: { 'X-Session-ID': state.sessionId }
+                headers: getApiHeaders()
             });
         } catch (e) {
             console.error('Failed to delete from cloud', e);
@@ -571,8 +826,8 @@ async function handleLogout() {
             await fetch(`${API_BASE}/api/auth/logout`, {
                 method: 'POST',
                 headers: {
-                    'Content-Type': 'application/json',
-                    'X-Session-ID': state.sessionId
+                    ...getApiHeaders(),
+                    'Content-Type': 'application/json'
                 }
             });
         }
@@ -609,7 +864,7 @@ async function handleLogout() {
 
 async function loadUser() {
     const response = await fetch(`${API_BASE}/api/auth/me`, {
-        headers: { 'X-Session-ID': state.sessionId }
+        headers: getApiHeaders()
     });
 
     if (!response.ok) throw new Error('Session invalid');

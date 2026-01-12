@@ -10,7 +10,6 @@ app.onError((err, c) => {
 
 app.use('/*', cors({ allowHeaders: ['Content-Type', 'X-Session-ID'] }));
 
-app.use('*', (c) => c.text('Under construction', 404));
 
 // Middleware to check authentication
 const authenticate = async (c, next) => {

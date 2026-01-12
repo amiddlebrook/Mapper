@@ -10,7 +10,6 @@ app.onError((err, c) => {
 
 app.use('/*', cors({ allowHeaders: ['Content-Type', 'X-Session-ID'] }));
 
-app.use('*', (c) => c.text('Under construction', 404));
 
 // Middleware to check authentication
 const authenticate = async (c, next) => {
@@ -531,6 +530,18 @@ app.get('/api/geocode', async (c) => {
   }
 
   return c.json({ error: 'Address not found' }, 404);
+});
+
+// ============================================
+// Static Asset Routes
+// ============================================
+
+app.get('*', async (c) => {
+  if (c.req.path.startsWith('/api/')) {
+    return c.notFound();
+  }
+
+  return c.env.ASSETS.fetch(c.req.raw);
 });
 
 // ============================================

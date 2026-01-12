@@ -533,6 +533,18 @@ app.get('/api/geocode', async (c) => {
 });
 
 // ============================================
+// Static Asset Routes
+// ============================================
+
+app.get('*', async (c) => {
+  if (c.req.path.startsWith('/api/')) {
+    return c.notFound();
+  }
+
+  return c.env.ASSETS.fetch(c.req.raw);
+});
+
+// ============================================
 // Utility Functions
 // ============================================
 

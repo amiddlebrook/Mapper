@@ -1,11 +1,11 @@
 name = "mapper"
 main = "src/worker.js"
 compatibility_date = "2024-01-01"
+assets = { directory = "./public" }
 
 # Custom domain routes
 routes = [
-  { pattern = "list-mapper.com", custom_domain = true },
-  { pattern = "www.list-mapper.com", custom_domain = true }
+  { pattern = "mapper.averymiddlebrook2014.workers.dev", custom_domain = true }
 ]
 
 [vars]

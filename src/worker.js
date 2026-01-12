@@ -8,7 +8,10 @@ app.onError((err, c) => {
   return c.json({ error: 'Internal Server Error', details: err.message, stack: err.stack }, 500);
 });
 
-app.use('/*', cors({ allowHeaders: ['Content-Type', 'X-Session-ID'] }));
+app.use('/*', cors({
+  origin: ['https://mapper.averymiddlebrook2014.workers.dev', 'http://localhost:3000'],
+  allowHeaders: ['Content-Type', 'X-Session-ID']
+}));
 
 
 // Middleware to check authentication

@@ -3,10 +3,8 @@ main = "src/worker.js"
 compatibility_date = "2024-01-01"
 assets = { directory = "./public" }
 
-# Custom domain routes
-routes = [
-  { pattern = "mapper.averymiddlebrook2014.workers.dev", custom_domain = true }
-]
+# Workers are automatically available at {name}.{subdomain}.workers.dev
+# Only add routes here for custom domains you own
 
 [vars]
 ENVIRONMENT = "production"

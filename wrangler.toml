@@ -1,21 +1,13 @@
 name = "mapper"
 main = "src/worker.js"
-compatibility_date = "2024-01-01"
-assets = { directory = "./public" }
+compatibility_date = "2026-10-16"
 
-# Workers are automatically available at {name}.{subdomain}.workers.dev
-# Only add routes here for custom domains you own
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
 
-[vars]
-ENVIRONMENT = "production"
-
-# D1 Database binding for production
 [[d1_databases]]
 binding = "DB"
 database_name = "mapper_db"
 database_id = "f0324c27-590d-40fa-adbf-ca4704e99b33"
-
-# KV namespace for sessions (optional - currently using D1 for sessions)
-[[kv_namespaces]]
-binding = "SESSIONS_MAPPER"
-id = "b6312c0de1a847fea67a47d2242390cd"

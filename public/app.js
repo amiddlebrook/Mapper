@@ -1,715 +1,265 @@
-// API Configuration
-const API_BASE = window.location.origin;
-
-// Default lists - always show these 3
-const DEFAULT_LISTS = ['Housing', 'Jobs', 'Parks'];
-
-// State
-let state = {
-    sessionId: null,
-    user: null,
-    isLoggedIn: false,
-    customLists: [],
-    items: {},
-    collapsedLists: {},
-    map: null,
-    markers: {},
-    satelliteLayer: null,
-    streetLayer: null,
-    // New: Map ID for cloud sync
-    mapId: null
-};
-
-// Helper: Map Frontend List Names to Backend Types
-function listNameToProps(listName) {
-    if (listName === 'Housing') return { type: 'Housing' };
-    if (listName === 'Jobs') return { type: 'Job' };
-    if (listName === 'Parks') return { type: 'Park' };
-    return { type: 'Custom', custom_type: listName };
+const $ = (id) => document.getElementById(id);
+const state = { user: null, maps: [], current: null, pins: [], markers: new Map(), newKey: '', selected: null };
+const categoryLabels = { Housing: 'Housing', Job: 'Jobs', Park: 'Parks', Custom: 'Other' };
+const categoryIcons = { Housing: '⌂', Job: '◈', Park: '♣', Custom: '⌖' };
+const categoryColors = { Housing: '#1da67b', Job: '#ef8a4c', Park: '#6aa7d1', Custom: '#b58bdc' };
+let toastTimer;
+let leaflet;
+const show = (id, visible) => $(id).classList.toggle('hidden', !visible);
+function message(text) { $('toast').textContent = text; show('toast', true); clearTimeout(toastTimer); toastTimer = setTimeout(() => show('toast', false), 4500); }
+async function api(path, options = {}) {
+  const response = await fetch(path, { credentials: 'same-origin', headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}) }, ...options });
+  let data = null;
+  try { data = await response.json(); } catch { /* HTTP failure */ }
+  if (!response.ok) throw new Error(data?.error || `Request failed (${response.status})`);
+  return data;
 }
-
-function propsToListName(type, customType) {
-    if (type === 'Housing') return 'Housing';
-    if (type === 'Job') return 'Jobs';
-    if (type === 'Park') return 'Parks';
-    return customType;
-}
-
-// List colors - distinct, non-overlapping colors
-const LIST_COLORS = {
-    Housing: '#2A9D8F',  // Teal (matches logo)
-    Jobs: '#E76F51',     // Coral/Orange
-    Parks: '#F4A261'     // Sandy yellow
-};
-
-function getListColor(listName) {
-    if (LIST_COLORS[listName]) return LIST_COLORS[listName];
-    let hash = 0;
-    for (let i = 0; i < listName.length; i++) {
-        hash = listName.charCodeAt(i) + ((hash << 5) - hash);
-    }
-    const hue = hash % 360;
-    return `hsl(${hue}, 80%, 65%)`;
-}
-
-// Initialize
-document.addEventListener('DOMContentLoaded', async () => {
-    // Check for OAuth callback in URL
-    const urlParams = new URLSearchParams(window.location.search);
-    const sessionFromCallback = urlParams.get('session');
-
-    if (sessionFromCallback) {
-        localStorage.setItem('sessionId', sessionFromCallback);
-        state.sessionId = sessionFromCallback;
-        // Clean URL
-        window.history.replaceState({}, document.title, window.location.pathname);
-    } else {
-        // Check for existing session
-        state.sessionId = localStorage.getItem('sessionId');
-    }
-
-    // Initial render (empty/guest)
-    initMap();
-    setupEventListeners();
-    updateListDropdown();
-    renderLists();
-    updateAuthUI();
-
-    // Check for existing session
-    if (state.sessionId) {
-        try {
-            await loadUser();
-            updateAuthUI();
-            // Now load data from cloud
-            await loadCloudData();
-        } catch (error) {
-            console.log('Session expired or invalid', error);
-            handleLogout();
-        }
-    }
-});
-
-// ============================================
-// Storage (Only used when Logged In)
-// ============================================
-
-// ============================================
-// Cloud Storage (Logged In)
-// ============================================
-
-async function loadCloudData() {
-    if (!state.isLoggedIn || !state.sessionId) return;
-
-    try {
-        // 1. Get User's Map
-        const mapsRes = await fetch(`${API_BASE}/api/maps`, {
-            headers: { 'X-Session-ID': state.sessionId }
-        });
-        const maps = await mapsRes.json();
-
-        if (maps.length > 0) {
-            state.mapId = maps[0].id;
-        } else {
-            // Should have been created by backend, but just in case
-            console.error('No map found for user');
-            return;
-        }
-
-        // 2. Get Pins
-        const pinsRes = await fetch(`${API_BASE}/api/maps/${state.mapId}/pins`, {
-            headers: { 'X-Session-ID': state.sessionId }
-        });
-        const pins = await pinsRes.json();
-
-        // 3. Clear and Rebuild State
-        state.items = {};
-        state.customLists = [];
-
-        pins.forEach(pin => {
-            const listName = propsToListName(pin.type, pin.custom_type);
-
-            // Add to custom lists if not default
-            if (!DEFAULT_LISTS.includes(listName) && !state.customLists.includes(listName)) {
-                state.customLists.push(listName);
-            }
-
-            if (!state.items[listName]) {
-                state.items[listName] = [];
-            }
-
-            state.items[listName].push({
-                id: pin.id,
-                url: pin.url,
-                address: pin.address,
-                lat: pin.lat,
-                lng: pin.lng,
-                created_at: pin.created_at
-            });
-        });
-
-        updateListDropdown();
-        renderLists();
-        updateMapMarkers();
-
-    } catch (e) {
-        console.error('Error loading cloud data', e);
-    }
-}
-
-// Deprecated: Local Storage functions removed
-function saveToStorage() {
-    // No-op for cloud sync
-}
-
-// ============================================
-// Map
-// ============================================
-
+function el(tag, classes = '', content = '') { const item = document.createElement(tag); item.className = classes; if (content !== '') item.textContent = String(content); return item; }
+function parseLink(raw) { try { const url = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`); return ['http:', 'https:'].includes(url.protocol) ? url.href : null; } catch { return null; } }
+function visiblePinName(pin) { return pin.address.split(',')[0] || pin.address; }
+function category(pin) { return pin.type === 'Custom' ? (pin.custom_type || 'Other') : categoryLabels[pin.type] || 'Other'; }
+function mapUrl(id) { return `${location.origin}/?map=${encodeURIComponent(id)}`; }
+function navigateMap(id) { const url = new URL(location.href); if (id) url.searchParams.set('map', id); else url.searchParams.delete('map'); url.searchParams.delete('error'); history.replaceState(null, '', `${url.pathname}${url.search}`); }
 function initMap() {
-    state.map = L.map('map').setView([39.8283, -98.5795], 4);
-
-    state.satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-        attribution: 'Tiles &copy; Esri',
-        maxZoom: 19
-    });
-
-    state.streetLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap contributors',
-        maxZoom: 19
-    });
-
-    state.satelliteLayer.addTo(state.map);
-
-    document.getElementById('btnSatellite').addEventListener('click', () => {
-        state.map.removeLayer(state.streetLayer);
-        state.satelliteLayer.addTo(state.map);
-        document.getElementById('btnSatellite').classList.add('active');
-        document.getElementById('btnStreet').classList.remove('active');
-    });
-
-    document.getElementById('btnStreet').addEventListener('click', () => {
-        state.map.removeLayer(state.satelliteLayer);
-        state.streetLayer.addTo(state.map);
-        document.getElementById('btnStreet').classList.add('active');
-        document.getElementById('btnSatellite').classList.remove('active');
-    });
-
-    updateMapMarkers();
+  leaflet = L.map('map', { zoomControl: false, preferCanvas: true }).setView([39.8283, -98.5795], 4);
+  L.control.zoom({ position: 'bottomright' }).addTo(leaflet);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap contributors', maxZoom: 19 }).addTo(leaflet);
+  leaflet.on('click', (event) => {
+    if (!state.user || !state.current?.is_owner) return;
+    const lat = Number(event.latlng.lat.toFixed(6)), lng = Number(event.latlng.lng.toFixed(6));
+    $('pinForm').elements.lat.value = lat;
+    $('pinForm').elements.lng.value = lng;
+    if (!$('pinDialog').open) $('pinDialog').showModal();
+    message('Coordinates selected. Add a name to save this place.');
+  });
 }
-
-function createMarkerIcon(color) {
-    return L.divIcon({
-        className: 'custom-marker',
-        html: `<div style="
-            background-color: ${color};
-            width: 24px;
-            height: 24px;
-            border-radius: 50% 50% 50% 0;
-            transform: rotate(-45deg);
-            border: 2px solid #0a0a0a;
-            box-shadow: 0 0 10px rgba(0,0,0,0.5);
-        "></div>`,
-        iconSize: [24, 24],
-        iconAnchor: [12, 24],
-        popupAnchor: [0, -24]
-    });
+function setView(view) {
+  for (const id of ['welcome', 'empty', 'explorer']) show(id, id === view);
+  if (view === 'explorer') requestAnimationFrame(() => leaflet.invalidateSize());
 }
-
-function updateMapMarkers() {
-    Object.values(state.markers).forEach(marker => marker.remove());
-    state.markers = {};
-
-    const allItems = [];
-    const allLists = [...DEFAULT_LISTS, ...state.customLists];
-
-    allLists.forEach(listName => {
-        const items = state.items[listName] || [];
-        items.forEach(item => {
-            allItems.push({ ...item, listName });
-        });
-    });
-
-    if (allItems.length === 0) return;
-
-    allItems.forEach(item => {
-        const color = getListColor(item.listName);
-        const icon = createMarkerIcon(color);
-        const marker = L.marker([item.lat, item.lng], { icon }).addTo(state.map);
-
-        marker.bindPopup(`
-            <div class="popup-content">
-                <h3>${item.listName}</h3>
-                <p>${item.address}</p>
-                <a href="https://${item.url}" target="_blank">${item.url}</a>
-            </div>
-        `);
-
-        state.markers[item.id] = marker;
-    });
-
-    const bounds = L.latLngBounds(allItems.map(item => [item.lat, item.lng]));
-    state.map.fitBounds(bounds, { padding: [50, 50], maxZoom: 12 });
+async function initialize() {
+  initMap();
+  const error = new URLSearchParams(location.search).get('error');
+  if (error) message('Google sign-in could not be completed. Try again.');
+  try { const session = await api('/api/session'); state.user = session.user; } catch { state.user = null; }
+  await loadWorkspace();
 }
-
-// ============================================
-// Lists UI
-// ============================================
-
-function renderLists() {
-    const container = document.getElementById('listsContainer');
-    const allLists = [...DEFAULT_LISTS, ...state.customLists];
-
-    container.innerHTML = '';
-
-    allLists.forEach(listName => {
-        const items = state.items[listName] || [];
-        const isCollapsed = state.collapsedLists[listName];
-        const color = getListColor(listName);
-
-        const group = document.createElement('div');
-        group.className = `list-group ${isCollapsed ? 'collapsed' : ''}`;
-        group.dataset.type = listName;
-
-        group.innerHTML = `
-            <div class="list-group-header" onclick="toggleList('${listName}')" style="border-left: 3px solid ${color};">
-                <div class="list-group-title">
-                    <span class="arrow">▼</span>
-                    <span>${listName}</span>
-                </div>
-                <span class="list-group-count">${items.length}</span>
-            </div>
-            <div class="list-group-items">
-                ${items.length === 0 ?
-                '<div class="list-group-empty">No items yet</div>' :
-                items.map(item => `
-                        <div class="list-item" data-id="${item.id}" onclick="focusItem('${item.id}', ${item.lat}, ${item.lng})">
-                            <div class="list-item-info">
-                                <div class="list-item-address">${item.address}</div>
-                                <a href="https://${item.url}" target="_blank" class="list-item-url" onclick="event.stopPropagation()">${item.url}</a>
-                            </div>
-                            <div class="list-item-actions">
-                                <button class="small" onclick="event.stopPropagation(); focusItem('${item.id}', ${item.lat}, ${item.lng})">View</button>
-                                <button class="small danger" onclick="event.stopPropagation(); deleteItem('${listName}', '${item.id}')">Delete</button>
-                            </div>
-                        </div>
-                    `).join('')
-            }
-            </div>
-        `;
-
-        container.appendChild(group);
-    });
-}
-
-function toggleList(listName) {
-    state.collapsedLists[listName] = !state.collapsedLists[listName];
-    // Only save collapse state if logged in? Or maybe fine to save preference? 
-    // User said "not saved", implies DATA. UI prefs maybe ok, but let's stick to strict no-save.
-    saveToStorage();
-    renderLists();
-}
-
-function focusItem(id, lat, lng) {
-    state.map.setView([lat, lng], 16);
-
-    if (state.markers[id]) {
-        state.markers[id].openPopup();
+async function loadWorkspace(target) {
+  $('sidebar').classList.remove('open');
+  $('accountLabel').textContent = state.user?.email || 'My workspace';
+  if (!state.user) {
+    state.maps = [];
+    renderMaps();
+    const shared = new URLSearchParams(location.search).get('map');
+    if (shared) {
+      try { await selectMap(shared, true); return; } catch (error) { message(error.message); }
     }
-
-    document.querySelectorAll('.list-item').forEach(el => el.classList.remove('highlighted'));
-    const item = document.querySelector(`[data-id="${id}"]`);
-    if (item) {
-        item.classList.add('highlighted');
-        setTimeout(() => item.classList.remove('highlighted'), 3000);
+    $('pageTitle').textContent = 'Overview';
+    setView('welcome'); return;
+  }
+  try {
+    state.maps = await api('/api/maps');
+    renderMaps();
+    const shared = target || new URLSearchParams(location.search).get('map');
+    const id = shared || state.maps[0]?.id;
+    if (!id) { state.current = null; $('pageTitle').textContent = 'Overview'; setView('empty'); return; }
+    await selectMap(id, !!shared);
+  } catch (error) { message(error.message); setView('empty'); }
+}
+function renderMaps() {
+  const nav = $('mapList'); nav.replaceChildren();
+  if (!state.maps.length) { nav.append(el('p', 'storage-note', 'No maps yet')); return; }
+  state.maps.forEach(map => {
+    const button = el('button', map.id === state.current?.id ? 'active' : '');
+    const icon = el('span', '', '▤');
+    const title = el('span', '', map.name);
+    button.append(icon, title);
+    button.title = map.name;
+    button.addEventListener('click', () => selectMap(map.id).catch(error => message(error.message)));
+    nav.append(button);
+  });
+}
+async function selectMap(id, shared = false) {
+  const map = await api(`/api/maps/${encodeURIComponent(id)}`);
+  const pins = await api(`/api/maps/${encodeURIComponent(id)}/pins`);
+  state.current = map;
+  state.pins = pins;
+  $('pageTitle').textContent = map.name;
+  $('mapHeading').textContent = map.name;
+  $('mapDescription').textContent = map.description || 'Your favorite places, all in one view.';
+  $('visibilityText').textContent = map.is_public ? 'Public' : 'Private';
+  $('pinCount').textContent = pins.length;
+  $('categoryCount').textContent = new Set(pins.map(category)).size;
+  $('newPinBtn').disabled = !map.is_owner;
+  $('shareBtn').disabled = !map.is_owner && !map.is_public;
+  $('mapSettingsBtn').disabled = !map.is_owner;
+  $('exportBtn').disabled = !pins.length;
+  show('readOnlyBadge', !map.is_owner);
+  show('mapSettingsBtn', map.is_owner);
+  show('mapTip', map.is_owner);
+  $('searchInput').value = '';
+  $('filterCategory').replaceChildren(new Option('All categories', ''));
+  [...new Set(pins.map(category))].sort().forEach(label => $('filterCategory').append(new Option(label, label)));
+  navigateMap(map.id);
+  renderMaps();
+  setView('explorer');
+  renderPins();
+  drawMarkers();
+}
+function filteredPins() {
+  const query = $('searchInput').value.trim().toLowerCase();
+  const chosen = $('filterCategory').value;
+  return state.pins.filter(pin => (!chosen || category(pin) === chosen) && (!query || `${pin.address} ${pin.url} ${category(pin)}`.toLowerCase().includes(query)));
+}
+function renderPins() {
+  const pins = filteredPins();
+  const list = $('pinList'); list.replaceChildren();
+  $('resultCount').textContent = `${pins.length} of ${state.pins.length} places`;
+  if (!pins.length) { const empty = el('div', 'pin-list-empty'); empty.append(el('strong', '', state.pins.length ? 'No matching places' : 'No places yet'), el('span', '', state.pins.length ? 'Try a different filter.' : 'Click Add a place or select a location on the map.')); list.append(empty); return; }
+  pins.forEach(pin => {
+    const card = el('article', `pin-card${pin.id === state.selected ? ' selected' : ''}`);
+    card.tabIndex = 0;
+    card.setAttribute('role', 'button');
+    const icon = el('div', 'pin-icon', categoryIcons[pin.type] || '⌖');
+    const copy = el('div', 'pin-copy');
+    copy.append(el('h3', '', visiblePinName(pin)), el('p', '', pin.address));
+    copy.append(el('span', 'pin-category', category(pin)));
+    const actions = el('div', 'pin-actions');
+    const link = el('a', '', '↗');
+    link.title = 'Open source link'; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.href = parseLink(pin.url) || '#';
+    link.addEventListener('click', event => event.stopPropagation());
+    actions.append(link);
+    if (state.current?.is_owner) {
+      const remove = el('button', '', '×'); remove.type = 'button'; remove.title = 'Delete place';
+      remove.addEventListener('click', async event => {
+        event.stopPropagation(); if (!confirm(`Remove ${pin.address}?`)) return;
+        try { await api(`/api/maps/${state.current.id}/pins/${pin.id}`, { method: 'DELETE' }); await selectMap(state.current.id); message('Place removed'); } catch (error) { message(error.message); }
+      }); actions.append(remove);
     }
+    card.append(icon, copy, actions);
+    const focus = () => { state.selected = pin.id; leaflet.flyTo([pin.lat, pin.lng], 14, { duration: 0.65 }); state.markers.get(pin.id)?.openPopup(); renderPins(); };
+    card.addEventListener('click', focus);
+    card.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); focus(); } });
+    list.append(card);
+  });
 }
-
-function updateListDropdown() {
-    const select = document.getElementById('inputList');
-    select.innerHTML = '';
-
-    DEFAULT_LISTS.forEach(list => {
-        const option = document.createElement('option');
-        option.value = list;
-        option.textContent = list;
-        select.appendChild(option);
-    });
-
-    state.customLists.forEach(list => {
-        const option = document.createElement('option');
-        option.value = list;
-        option.textContent = list;
-        select.appendChild(option);
-    });
+function drawMarkers() {
+  for (const marker of state.markers.values()) marker.remove();
+  state.markers.clear();
+  for (const pin of state.pins) {
+    const color = categoryColors[pin.type] || '#1da67b';
+    const marker = L.circleMarker([pin.lat, pin.lng], { radius: 9, weight: 3, color: 'white', fillColor: color, fillOpacity: 1 }).addTo(leaflet);
+    const popup = el('div', 'marker-popup');
+    const name = el('strong', '', visiblePinName(pin));
+    const address = el('p', '', pin.address);
+    const link = el('a', '', 'Open link ↗'); link.href = parseLink(pin.url) || '#'; link.target = '_blank'; link.rel = 'noopener noreferrer';
+    popup.append(name, address, link);
+    marker.bindPopup(popup);
+    state.markers.set(pin.id, marker);
+  }
+  if (state.pins.length) {
+    const bounds = L.latLngBounds(state.pins.map(pin => [pin.lat, pin.lng]));
+    leaflet.fitBounds(bounds.pad(.2), { maxZoom: 13, padding: [40, 40], animate: false });
+  } else leaflet.setView([39.8283, -98.5795], 4);
 }
-
-// ============================================
-// Event Listeners
-// ============================================
-
-function setupEventListeners() {
-    // Add button opens modal
-    document.getElementById('addBtn').addEventListener('click', openAddModal);
-
-    // Add form
-    document.getElementById('addForm').addEventListener('submit', handleAddItem);
-
-    // New list button
-    document.getElementById('newListBtn').addEventListener('click', openNewListModal);
-
-    // New list form
-    document.getElementById('newListForm').addEventListener('submit', handleCreateList);
-
-    // Auth - Google OAuth
-    document.getElementById('signInBtn').addEventListener('click', () => {
-        window.location.href = `${API_BASE}/api/auth/google`;
-    });
-
-    // Profile
-    document.getElementById('profileBtn').addEventListener('click', openProfileModal);
-    document.getElementById('logoutBtnModal').addEventListener('click', handleLogout);
+function openMapDialog(edit = false) {
+  if (!state.user) { message('Create a workspace first'); return; }
+  const form = $('mapForm'); form.reset();
+  form.dataset.editId = edit && state.current?.is_owner ? state.current.id : '';
+  $('mapDialogTitle').textContent = form.dataset.editId ? 'Map settings' : 'New map';
+  show('deleteMapBtn', !!form.dataset.editId);
+  if (form.dataset.editId) {
+    form.elements.name.value = state.current.name;
+    form.elements.description.value = state.current.description || '';
+    form.elements.is_public.checked = !!state.current.is_public;
+  }
+  $('mapDialog').showModal();
 }
-
-// ============================================
-// Add Modal
-// ============================================
-
-function openAddModal() {
-    document.getElementById('addModal').classList.add('active');
-    document.getElementById('formError').classList.add('hidden');
-    document.getElementById('inputUrl').focus();
+async function saveMap(event) {
+  event.preventDefault();
+  const form = event.currentTarget, editId = form.dataset.editId;
+  const body = JSON.stringify({ name: form.elements.name.value, description: form.elements.description.value, is_public: form.elements.is_public.checked });
+  try {
+    const saved = await api(editId ? `/api/maps/${editId}` : '/api/maps', { method: editId ? 'PATCH' : 'POST', body });
+    $('mapDialog').close(); await loadWorkspace(saved.id); message(editId ? 'Map updated' : 'Map created');
+  } catch (error) { message(error.message); }
 }
-
-function closeAddModal() {
-    document.getElementById('addModal').classList.remove('active');
-    document.getElementById('addForm').reset();
+async function savePin(event) {
+  event.preventDefault();
+  if (!state.current?.is_owner) return;
+  const form = event.currentTarget;
+  const body = JSON.stringify({ address: form.elements.address.value, lat: Number(form.elements.lat.value), lng: Number(form.elements.lng.value), url: form.elements.url.value, type: form.elements.type.value, custom_type: form.elements.custom_type.value });
+  try {
+    await api(`/api/maps/${state.current.id}/pins`, { method: 'POST', body });
+    $('pinDialog').close(); form.reset(); await selectMap(state.current.id); message('Place added to your map');
+  } catch (error) { message(error.message); }
 }
-
-async function handleAddItem(e) {
-    e.preventDefault();
-
-    const url = document.getElementById('inputUrl').value;
-    const address = document.getElementById('inputAddress').value;
-    const listName = document.getElementById('inputList').value;
-    const errorEl = document.getElementById('formError');
-
-    errorEl.classList.add('hidden');
-
-    try {
-        // Geocode
-        const geocodeQuery = address.trim() || url.trim();
-        const geocodeResponse = await fetch(`${API_BASE}/api/geocode?address=${encodeURIComponent(geocodeQuery)}`, {
-            headers: state.sessionId ? { 'X-Session-ID': state.sessionId } : undefined
-        });
-        if (!geocodeResponse.ok) {
-            const errorText = await geocodeResponse.text();
-            let errorDetail = 'Geocoding failed; please try again later.';
-
-            if (errorText) {
-                try {
-                    const parsedError = JSON.parse(errorText);
-                    errorDetail = parsedError.error || parsedError.message || errorDetail;
-                } catch (parseError) {
-                    errorDetail = errorText;
-                }
-            }
-
-            throw new Error(errorDetail);
-        }
-
-        const geocodeData = await geocodeResponse.json();
-        const lat = geocodeData.lat;
-        const lng = geocodeData.lng;
-        const fullAddress = geocodeData.address;
-
-        // Normalize URL
-        let normalizedUrl = url.trim()
-            .replace(/^https?:\/\//, '')
-            .replace(/\/$/, '')
-            .replace(/^www\./, '')
-            .toLowerCase();
-
-        // Check for duplicates
-        const items = state.items[listName] || [];
-        if (items.some(item => item.url === normalizedUrl)) {
-            throw new Error('This URL is already in this list');
-        }
-
-        // Create item locally
-        const newItem = {
-            id: crypto.randomUUID(),
-            url: normalizedUrl,
-            address: fullAddress,
-            lat,
-            lng,
-            created_at: new Date().toISOString()
-        };
-
-        // IF LOGGED IN: Sync to Cloud
-        if (state.isLoggedIn && state.sessionId && state.mapId) {
-            const props = listNameToProps(listName);
-
-            const res = await fetch(`${API_BASE}/api/maps/${state.mapId}/pins`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Session-ID': state.sessionId
-                },
-                body: JSON.stringify({
-                    url: normalizedUrl,
-                    address: fullAddress,
-                    lat,
-                    lng,
-                    type: props.type,
-                    custom_type: props.custom_type
-                })
-            });
-
-            if (!res.ok) {
-                const text = await res.text();
-                let err;
-
-                try {
-                    err = JSON.parse(text);
-                } catch (parseError) {
-                    console.error('Failed to parse error response:', text);
-                    throw new Error(`Failed to save to cloud (HTTP ${res.status})`);
-                }
-
-                throw new Error(err.error || 'Failed to save to cloud');
-            }
-
-            const savedPin = await res.json();
-            newItem.id = savedPin.id; // Use server ID
-        }
-
-        if (!state.items[listName]) {
-            state.items[listName] = [];
-        }
-        state.items[listName].unshift(newItem);
-
-        // Make sure list is expanded
-        state.collapsedLists[listName] = false;
-
-        renderLists();
-        updateMapMarkers();
-        closeAddModal();
-
-    } catch (error) {
-        errorEl.textContent = error.message;
-        errorEl.classList.remove('hidden');
-    }
+async function lookupAddress() {
+  const address = $('pinForm').elements.address.value.trim();
+  if (!address) { message('Enter an address to look up'); return; }
+  $('geocodeBtn').disabled = true;
+  try {
+    const point = await api(`/api/geocode?address=${encodeURIComponent(address)}`);
+    $('pinForm').elements.lat.value = point.lat;
+    $('pinForm').elements.lng.value = point.lng;
+    message('Location found. Review the coordinates and save.');
+    leaflet.flyTo([point.lat, point.lng], 13);
+  } catch (error) { message(error.message); } finally { $('geocodeBtn').disabled = false; }
 }
-
-async function deleteItem(listName, itemId) {
-    if (!confirm('Delete this item?')) return;
-
-    // IF LOGGED IN: Sync Delete
-    if (state.isLoggedIn && state.sessionId && state.mapId) {
-        try {
-            await fetch(`${API_BASE}/api/maps/${state.mapId}/pins/${itemId}`, {
-                method: 'DELETE',
-                headers: { 'X-Session-ID': state.sessionId }
-            });
-        } catch (e) {
-            console.error('Failed to delete from cloud', e);
-            alert('Failed to delete from cloud');
-            return;
-        }
-    }
-
-    state.items[listName] = (state.items[listName] || []).filter(item => item.id !== itemId);
-    renderLists();
-    updateMapMarkers();
+function exportCsv() {
+  const quote = value => { const text = String(value ?? ''); const safe = /^[=+@\-\t\r]/.test(text) ? `'${text}` : text; return `"${safe.replaceAll('"', '""')}"`; };
+  const lines = [['Name / Address', 'Link', 'Category', 'Latitude', 'Longitude'], ...state.pins.map(pin => [pin.address, pin.url, category(pin), pin.lat, pin.lng])];
+  const blob = new Blob([lines.map(line => line.map(quote).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `mapper-${(state.current?.name || 'places').replace(/[^a-z0-9]+/gi, '-')}.csv`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
-
-// ============================================
-// New List Modal
-// ============================================
-
-function openNewListModal() {
-    document.getElementById('newListModal').classList.add('active');
-    document.getElementById('newListName').focus();
+async function createWorkspace() {
+  try {
+    const result = await api('/api/session/guest', { method: 'POST' });
+    state.user = result.user; state.newKey = result.recoveryKey || '';
+    await loadWorkspace();
+    $('newKey').value = state.newKey; show('newKeyArea', !!state.newKey);
+    $('accountDialog').showModal();
+    message('Workspace created — save your recovery key');
+  } catch (error) { message(error.message); }
 }
-
-function closeNewListModal() {
-    document.getElementById('newListModal').classList.remove('active');
-    document.getElementById('newListForm').reset();
+async function recoverWorkspace(event) {
+  event.preventDefault();
+  try {
+    const result = await api('/api/session/recover', { method: 'POST', body: JSON.stringify({ key: event.currentTarget.elements.key.value.trim() }) });
+    state.user = result.user; $('recoverDialog').close(); await loadWorkspace(); message('Workspace restored');
+  } catch (error) { message(error.message); }
 }
-
-function handleCreateList(e) {
-    e.preventDefault();
-
-    const name = document.getElementById('newListName').value.trim();
-
-    if (!name) return;
-
-    if (DEFAULT_LISTS.includes(name) || state.customLists.includes(name)) {
-        alert('This list already exists!');
-        return;
-    }
-
-    state.customLists.push(name);
-    state.items[name] = [];
-
-    // Note: We don't explicitly sync "User Lists" to backend until an item is added to them.
-    // The backend infers lists from Pin Types.
-    // This is fine for now.
-
-    updateListDropdown();
-    renderLists();
-    closeNewListModal();
+async function shareMap() {
+  if (!state.current) return;
+  if (state.current.is_owner && !state.current.is_public) {
+    if (!confirm('This map is private. Make it public and create a read-only link?')) return;
+    try { await api(`/api/maps/${state.current.id}`, { method: 'PATCH', body: JSON.stringify({ is_public: true }) }); await selectMap(state.current.id); } catch (error) { message(error.message); return; }
+  }
+  try { await navigator.clipboard.writeText(mapUrl(state.current.id)); message('Public read-only link copied'); }
+  catch { prompt('Copy this link:', mapUrl(state.current.id)); }
 }
-
-// ============================================
-// Auth & Profile
-// ============================================
-
-async function handleLogout() {
-    try {
-        if (state.sessionId) {
-            await fetch(`${API_BASE}/api/auth/logout`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Session-ID': state.sessionId
-                }
-            });
-        }
-    } catch (e) { console.error(e); }
-
-    // Clear everything
-    localStorage.removeItem('sessionId');
-    localStorage.removeItem('customLists');
-    // Also clear list items from storage
-    Object.keys(localStorage).forEach(key => {
-        if (key.startsWith('list_') || key === 'collapsedLists') {
-            localStorage.removeItem(key);
-        }
-    });
-
-    state.sessionId = null;
-    state.user = null;
-    state.isLoggedIn = false;
-    state.customLists = [];
-    state.items = {};
-    state.collapsedLists = {};
-    state.mapId = null;
-
-    closeProfileModal();
-    updateAuthUI();
-    renderLists();
-    updateListDropdown();
-    updateMapMarkers();
-
-    // Replace URL to remove session param
-    window.history.replaceState({}, document.title, '/');
-    window.location.reload();
+function bindEvents() {
+  $('newMapBtn').addEventListener('click', () => openMapDialog());
+  $('emptyNewMap').addEventListener('click', () => openMapDialog());
+  $('newPinBtn').addEventListener('click', () => { $('pinForm').reset(); $('pinDialog').showModal(); });
+  $('createWorkspaceBtn').addEventListener('click', createWorkspace);
+  $('recoverBtn').addEventListener('click', () => $('recoverDialog').showModal());
+  $('mapSettingsBtn').addEventListener('click', () => openMapDialog(true));
+  $('mapForm').addEventListener('submit', saveMap);
+  $('pinForm').addEventListener('submit', savePin);
+  $('recoverForm').addEventListener('submit', recoverWorkspace);
+  $('geocodeBtn').addEventListener('click', lookupAddress);
+  $('searchInput').addEventListener('input', renderPins);
+  $('filterCategory').addEventListener('change', renderPins);
+  $('shareBtn').addEventListener('click', shareMap);
+  $('exportBtn').addEventListener('click', exportCsv);
+  $('pinType').addEventListener('change', () => show('customLabel', $('pinType').value === 'Custom'));
+  $('accountBtn').addEventListener('click', () => { if (!state.user) { $('recoverDialog').showModal(); return; } $('newKey').value = state.newKey; show('newKeyArea', !!state.newKey); $('accountDialog').showModal(); });
+  $('copyKeyBtn').addEventListener('click', async () => { try { await navigator.clipboard.writeText(state.newKey); message('Recovery key copied'); } catch { $('newKey').select(); document.execCommand('copy'); message('Recovery key selected'); } });
+  $('signOutBtn').addEventListener('click', async () => { if (!confirm('Sign out? Make sure you saved your recovery key first.')) return; try { await api('/api/session/logout', { method: 'POST' }); location.href = '/'; } catch (error) { message(error.message); } });
+  $('deleteMapBtn').addEventListener('click', async () => { if (!state.current?.is_owner || !confirm(`Permanently delete "${state.current.name}" and all its places?`)) return; try { await api(`/api/maps/${state.current.id}`, { method: 'DELETE' }); $('mapDialog').close(); navigateMap(null); state.current = null; await loadWorkspace(); message('Map deleted'); } catch (error) { message(error.message); } });
+  document.querySelectorAll('.close-dialog').forEach(button => button.addEventListener('click', () => button.closest('dialog').close()));
+  $('mobileMenu').addEventListener('click', () => $('sidebar').classList.toggle('open'));
 }
-
-async function loadUser() {
-    const response = await fetch(`${API_BASE}/api/auth/me`, {
-        headers: { 'X-Session-ID': state.sessionId }
-    });
-
-    if (!response.ok) throw new Error('Session invalid');
-
-    const data = await response.json();
-    state.user = data;
-    state.isLoggedIn = true;
-}
-
-function updateAuthUI() {
-    const signInBtn = document.getElementById('signInBtn');
-    const userInfo = document.getElementById('userInfo');
-
-    if (state.isLoggedIn && state.user) {
-        signInBtn.classList.add('hidden');
-        userInfo.classList.remove('hidden');
-    } else {
-        signInBtn.classList.remove('hidden');
-        userInfo.classList.add('hidden');
-    }
-}
-
-// ============================================
-// Profile Logic
-// ============================================
-
-function openProfileModal() {
-    if (!state.user) return;
-
-    const emailEl = document.getElementById('profileEmail');
-    const listCountEl = document.getElementById('profileListCount');
-    const itemCountEl = document.getElementById('profileItemCount');
-
-    emailEl.textContent = state.user.email;
-
-    const listCount = DEFAULT_LISTS.length + state.customLists.length;
-    let itemCount = 0;
-    Object.values(state.items).forEach(items => itemCount += items.length);
-
-    listCountEl.textContent = listCount;
-    itemCountEl.textContent = itemCount;
-
-    document.getElementById('profileModal').classList.add('active');
-}
-
-function closeProfileModal() {
-    document.getElementById('profileModal').classList.remove('active');
-}
-
-function downloadData() {
-    // Flatten data to CSV
-    const rows = [['List Name', 'Address', 'URL', 'Latitude', 'Longitude', 'Date Added']];
-
-    // Process all lists
-    [...DEFAULT_LISTS, ...state.customLists].forEach(listName => {
-        const items = state.items[listName] || [];
-        items.forEach(item => {
-            // Escape field values to handle commas/quotes in data
-            const clean = (text) => {
-                if (!text) return '';
-                const str = String(text).replace(/"/g, '""'); // Double up quotes
-                return `"${str}"`; // Wrap in quotes
-            };
-
-            rows.push([
-                clean(listName),
-                clean(item.address),
-                clean(item.url),
-                item.lat,
-                item.lng,
-                clean(item.created_at || new Date().toISOString())
-            ]);
-        });
-    });
-
-    // Convert to CSV string
-    const csvContent = rows.map(row => row.join(',')).join('\n');
-
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `list-mapper-export-${new Date().toISOString().slice(0, 10)}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-}
-
-// ============================================
-// Global functions
-// ============================================
-
-window.toggleList = toggleList;
-window.focusItem = focusItem;
-window.deleteItem = deleteItem;
-window.openAddModal = openAddModal;
-window.closeAddModal = closeAddModal;
-window.openNewListModal = openNewListModal;
-window.closeNewListModal = closeNewListModal;
-window.openProfileModal = openProfileModal;
-window.closeProfileModal = closeProfileModal;
-window.downloadData = downloadData;
+bindEvents();
+initialize().catch(error => message(error.message));

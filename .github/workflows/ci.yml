@@ -42,3 +42,21 @@ jobs:
         run: npm run db:remote
       - name: Publish Worker and static assets
         run: npm run deploy
+      - name: Smoke test production app
+        run: |
+          set -euo pipefail
+          URL="https://mapper.averymiddlebrook2014.workers.dev"
+          for attempt in $(seq 1 10); do
+            if curl -fLsS --max-time 15 "$URL/api/health" | grep -q '"status":"ok"'; then
+              break
+            fi
+            if [ "$attempt" -eq 10 ]; then
+              echo "Production API health check failed"
+              exit 1
+            fi
+            sleep 3
+          done
+          curl -fLsS --max-time 15 "$URL/" | grep -q '<title>Mapper'
+          curl -fLsS --max-time 15 "$URL/app.js" | grep -q 'loadWorkspace'
+          curl -fLsS --max-time 15 "$URL/styles.css" | grep -q '.workspace'
+          echo "Production API, HTML, JavaScript, and CSS verified"

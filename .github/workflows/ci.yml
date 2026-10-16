@@ -46,15 +46,20 @@ jobs:
         run: |
           set -euo pipefail
           URL="https://mapper.averymiddlebrook2014.workers.dev"
-          for attempt in $(seq 1 10); do
-            if curl -fLsS --max-time 15 "$URL/api/health" | grep -q '"status":"ok"'; then
+          for attempt in $(seq 1 4); do
+            response=$(curl -sSL --max-time 15 -w '\nHTTP_STATUS=%{http_code}' "$URL/api/health" 2>&1) || true
+            if printf '%s' "$response" | grep -q '"status":"ok"'; then
+              echo "Production API health passed"
               break
             fi
-            if [ "$attempt" -eq 10 ]; then
-              echo "Production API health check failed"
+            echo "Attempt $attempt: $(printf '%s' "$response" | head -c 500)"
+            if [ "$attempt" -eq 4 ]; then
+              echo "Production API health check failed; diagnosing DNS and HTTP headers"
+              getent hosts mapper.averymiddlebrook2014.workers.dev || true
+              curl -sSIL --max-time 15 "$URL/api/health" || true
               exit 1
             fi
-            sleep 3
+            sleep 2
           done
           curl -fLsS --max-time 15 "$URL/" | grep -q '<title>Mapper'
           curl -fLsS --max-time 15 "$URL/app.js" | grep -q 'loadWorkspace'

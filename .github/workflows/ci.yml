@@ -42,6 +42,23 @@ jobs:
         run: npm run db:remote
       - name: Publish Worker and static assets
         run: npm run deploy
+      - name: Inspect access rules for Mapper
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request, urllib.error
+          url = "https://api.cloudflare.com/client/v4/accounts/" + os.environ["CLOUDFLARE_ACCOUNT_ID"] + "/access/apps"
+          request = urllib.request.Request(url, headers={"Authorization": "Bearer " + os.environ["CLOUDFLARE_API_TOKEN"]})
+          try:
+              with urllib.request.urlopen(request, timeout=20) as resp:
+                  data = json.load(resp)
+                  print("ACCESS_API_STATUS:", resp.status, "SUCCESS:", data.get("success"))
+                  for app in data.get("result", []):
+                      print("ACCESS_APP:", json.dumps({k: app.get(k) for k in ("id", "name", "type", "domain", "destinations")}))
+          except urllib.error.HTTPError as error:
+              print("ACCESS_API_STATUS:", error.code, error.read().decode()[:1400])
+          except Exception as error:
+              print("ACCESS_API_ERROR:", str(error))
+          PY
       - name: Smoke test production app
         run: |
           set -euo pipefail

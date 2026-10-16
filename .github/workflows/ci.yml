@@ -42,22 +42,35 @@ jobs:
         run: npm run db:remote
       - name: Publish Worker and static assets
         run: npm run deploy
-      - name: Inspect access rules for Mapper
+      - name: Configure Mapper-only public Access bypass
         run: |
           python3 - <<'PY'
           import os, json, urllib.request, urllib.error
-          url = "https://api.cloudflare.com/client/v4/accounts/" + os.environ["CLOUDFLARE_ACCOUNT_ID"] + "/access/apps"
-          request = urllib.request.Request(url, headers={"Authorization": "Bearer " + os.environ["CLOUDFLARE_API_TOKEN"]})
-          try:
-              with urllib.request.urlopen(request, timeout=20) as resp:
-                  data = json.load(resp)
-                  print("ACCESS_API_STATUS:", resp.status, "SUCCESS:", data.get("success"))
-                  for app in data.get("result", []):
-                      print("ACCESS_APP:", json.dumps({k: app.get(k) for k in ("id", "name", "type", "domain", "destinations")}))
-          except urllib.error.HTTPError as error:
-              print("ACCESS_API_STATUS:", error.code, error.read().decode()[:1400])
-          except Exception as error:
-              print("ACCESS_API_ERROR:", str(error))
+          base = "https://api.cloudflare.com/client/v4/accounts/" + os.environ["CLOUDFLARE_ACCOUNT_ID"] + "/access/apps"
+          token = os.environ["CLOUDFLARE_API_TOKEN"]
+          domain = "mapper.averymiddlebrook2014.workers.dev"
+          def call(url, method="GET", payload=None):
+              data = json.dumps(payload).encode() if payload is not None else None
+              req = urllib.request.Request(url, data=data, method=method, headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=20) as response:
+                      result = json.load(response)
+              except urllib.error.HTTPError as error:
+                  raise RuntimeError("Cloudflare Access API HTTP " + str(error.code) + ": " + error.read().decode()[:1200])
+              if not result.get("success"):
+                  raise RuntimeError("Cloudflare Access API failure: " + str(result.get("errors", [])))
+              return result.get("result", [])
+          matches = [app for app in call(base) if app.get("domain") == domain and app.get("type") == "self_hosted"]
+          if len(matches) != 1:
+              raise RuntimeError("Expected exactly one Mapper Access app, found " + str(len(matches)) + "; refusing to change others")
+          app = matches[0]
+          path = base + "/" + app["id"] + "/policies"
+          policies = call(path)
+          if any(p.get("decision") == "bypass" and any("everyone" in rule for rule in p.get("include", [])) for p in policies):
+              print("Existing public bypass is present for Mapper")
+          else:
+              result = call(path, "POST", {"name": "Mapper public website", "decision": "bypass", "include": [{"everyone": {}}]})
+              print("Created Mapper-only public bypass policy:", result.get("id"))
           PY
       - name: Smoke test production app
         run: |

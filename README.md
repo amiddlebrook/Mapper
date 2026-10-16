@@ -1,119 +1,73 @@
 # Mapper
 
-**Map your world, one location at a time.**
-
-Mapper is a fast, minimalist web application for organizing locations with URLs. Perfect for apartment hunting, job searches, travel planning, and research projects.
-
-## What You Can Do
-
-### 📍 Organize Locations
-Add any location with a URL - apartment listings, job postings, parks, restaurants, or anything else. Each pin includes:
-- The URL (automatically deduplicated)
-- Physical address (geocoded to the map)
-- Type (Housing, Job, Park, or Custom)
-- Visual marker on an interactive map
-
-### 🗺️ Multiple Maps
-Create unlimited maps for different projects:
-- Apartment Search 2026
-- Job Opportunities - Bay Area
-- Weekend Getaway Ideas
-- Restaurant Wishlist
-
-### 🔗 Share Your Maps
-Make any map public to share with friends, family, or colleagues. They'll get a read-only view with all your pins and can explore the map without needing an account.
-
-### 🎯 Stay Organized
-- See all your pins on an interactive map
-- Browse them in a synchronized list view
-- Click any pin to center the map
-- Delete pins you no longer need
-- Never accidentally add the same URL twice
-
-## How to Use
-
-### Getting Started
-
-1. **Sign In**
-   Enter your email - no password required. We'll create your account or log you in automatically.
-
-2. **Create Your First Map**
-   Click "New Map" and give it a name. You can create as many maps as you need.
-
-3. **Add Locations**
-   Fill in the form at the top:
-   - **URL**: Paste the link (e.g., apartment listing, job posting)
-   - **Address**: Type the location (we'll find it on the map)
-   - **Type**: Choose Housing, Job, Park, or create your own category
-
-4. **View and Manage**
-   - Your pins appear instantly on the map and in the list below
-   - Click any pin or list item to focus the map
-   - Delete pins you don't need anymore
-
-### Sharing Maps
-
-1. Select the map you want to share
-2. Click "Share" in the top navigation
-3. Make it public to get a shareable link
-4. Send the link to anyone - they can view but not edit
+**Every place has a story.** A private, shareable place-collection application built entirely with Cloudflare Workers + static assets + D1. No subscription, payment processor, hosting VM, paid map API, or app account required.
 
 ## Features
 
-- ⚡ **Lightning Fast** - Built on Cloudflare's global network
-- 🎨 **Clean Interface** - Black background with light green accents, zero clutter
-- 🚫 **No Duplicates** - Same URL can't be added twice to a map
-- 🔒 **Private by Default** - Your maps are private unless you share them
-- 📱 **Works Everywhere** - Responsive design works on desktop and mobile
-- 🗺️ **Interactive Maps** - Powered by OpenStreetMap
-- 💾 **Auto-Save** - Everything saves instantly
+- Multiple maps with names, descriptions, private/public visibility, and read-only share links.
+- Add destinations by clicking the map or looking up an address. Supports housing, jobs, parks, or custom categories.
+- Search, category filters, location focus, delete, CSV export, mobile layout.
+- Secure, no-email workspace with a generated recovery key. The key can restore a workspace on another device.
+- Optional **Google sign-in** preserves access to existing Google-linked Mapper accounts (requires free Google OAuth credentials).
+- Data lives in **Cloudflare D1**. Static frontend + backend are deployed together as one **Cloudflare Worker**.
+- GitHub Actions runs tests and deploys on changes to `main`.
 
-## Use Cases
+## Architecture
 
-**Apartment Hunting**
-Track all your apartment listings in one place. See them on a map to understand neighborhoods and commute times.
-
-**Job Search**
-Map out job opportunities across the city. Compare locations and plan your applications strategically.
-
-**Travel Planning**
-Save hotels, restaurants, and attractions. Build the perfect itinerary with everything mapped out.
-
-**Research Projects**
-Organize locations for research, field work, or any project that involves physical places.
-
-## Deployment
-
-Mapper is deployed at **[list-mapper.com](https://list-mapper.com)** on Cloudflare Pages.
-
-### Important Documentation
-
-- **[DEPLOYMENT_FIX.md](./DEPLOYMENT_FIX.md)** - Fix deployment errors (read this first if deploys are failing)
-- **[DOMAIN_SETUP.md](./DOMAIN_SETUP.md)** - Custom domain configuration guide
-
-### Quick Deploy
-
-```bash
-# Deploy manually
-npm run deploy
-
-# Or use GitHub integration (recommended)
-git push origin main  # Cloudflare auto-deploys
+```
+Browser (Leaflet + OpenStreetMap tiles)
+     ↓ same-origin HTTPS
+Cloudflare Worker /api/* ── Cloudflare D1
+     └── Static Assets (public/)
+     └── Geocoding cache + one-request-per-two-seconds global throttle
+            └── OpenStreetMap Nominatim (low-volume use only)
+GitHub → Actions: test → D1 additive schema → wrangler deploy
 ```
 
-**Note**: This is a Cloudflare Pages project. Use `wrangler pages deploy`, not `wrangler deploy`.
+Only the Cloudflare and GitHub **free plans** are required, within their respective free-tier quotas. Tiles/geocoding are from community-operated OpenStreetMap services, whose usage policies must be respected; do not use them for high-volume commercial geocoding. Manual map-click pinning requires no geocoder.
 
-## Support
+## First deployment
 
-Found a bug or have a suggestion? Open an issue on our [GitHub repository](https://github.com/North-Star-Apps/Mapper).
+1. Use a free Cloudflare account with Workers and D1 enabled. Keep the existing D1 ID in `wrangler.toml` **if deploying to the original Cloudflare account**. For a different account, first create a D1 database `mapper_db` using `npx wrangler d1 create mapper_db`, then update `database_id` to its ID.
+2. In the GitHub repository **Settings → Secrets and variables → Actions**, configure `CLOUDFLARE_API_TOKEN` (Cloudflare API token with Workers Scripts Edit and D1 Edit permissions on your account) and `CLOUDFLARE_ACCOUNT_ID`. Do not commit these values.
+3. Push/merge into `main`. The workflow tests the app, applies `schema.sql` idempotently to the existing D1 database (no `DROP` statements), and deploys the Worker + assets to `mapper.<your-workers-subdomain>.workers.dev`.
+4. If you want to continue using `list-mapper.com`, add it as a **Worker Custom Domain** under Cloudflare Workers & Pages → `mapper` → Settings → Domains & Routes. A Workers deploy does not automatically move a prior Pages custom domain.
+5. Visit the URL, click **Create free workspace**, and save the shown recovery key. Without the recovery key (or a still-active browser session), a workspace cannot be recovered. Sharing a map is optional and disabled by default.
 
-## Privacy
+**Optional Google OAuth:** Set Worker secrets `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` through Wrangler (`npx wrangler secret put ...`), and configure Google OAuth redirect to `https://<your-domain>/api/auth/google/callback`. These secrets are only needed for Google sign-in, not guest workspaces. Do not use the old unauthenticated email-login endpoint: it has been removed.
 
-- Your email is only used for authentication
-- Private maps are only visible to you
-- Public maps don't expose your email
-- We don't track or sell your data
+## Local development
 
----
+```bash
+npm install
+npm run db:local
+npm run dev
+```
 
-Built with Cloudflare Pages, Workers, and D1.
+Run tests: `npm run check && npm test`.
+
+To deploy manually (after `wrangler login` and configuring the D1 binding):
+
+```bash
+npm run db:remote
+npm run deploy
+```
+
+## Privacy and security
+
+- The former open `/api/auth/login` endpoint, which issued sessions for arbitrary emails, has been removed.
+- Sessions use HttpOnly, SameSite cookies; random session values are hashed before D1 storage, with request Origin checked on mutations.
+- New no-email accounts use a random 192-bit recovery key; only its SHA-256 digest is used for database lookup. The raw key is returned once at creation.
+- Google OAuth verifies `state` and the user's verified email and never includes session tokens in redirect URLs.
+- Public sharing only exposes map and pin data; private map reads and all write operations enforce ownership.
+- Untrusted place names and URLs are rendered as DOM text rather than inserted as HTML; submitted web addresses require `http(s)`.
+- D1 tables are retained, including the existing users, maps, pins and sessions. New geocoding tables are added without destructive migration.
+
+## Limitations
+
+- Free plans have rate/usage limits (Workers, D1, GitHub Actions); no unlimited hosting can honestly be guaranteed at $0.
+- OpenStreetMap tile/geocoding servers are community resources, not an SLA-backed commercial service. Global Nominatim lookup throttling and caching are built in.
+- A recovery key is only available at initial creation and must be saved. There is no email-based password reset.
+- Google OAuth login requires separately configured free Google credentials. Existing Google-linked accounts remain stored, but older sessions no longer work after this security migration.
+
+Built for [amiddlebrook/Mapper](https://github.com/amiddlebrook/Mapper).
